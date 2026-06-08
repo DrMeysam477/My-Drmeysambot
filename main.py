@@ -1,7 +1,7 @@
 import telebot
 
 # توکن خودت را اینجا بین دو کوتیشن قرار بده
-TOKEN = 8979791105:AAGLK5usKZ54g7R4OmsQ2YkrN2cgUCegaLc
+TOKEN = '8979791105:AAGLK5usKZ54g7R40msQ2YkrN2cgUCegaLc'
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -15,3 +15,4 @@ def echo_all(message):
 
 print("Bot is running...")
 bot.infinity_polling()
+
