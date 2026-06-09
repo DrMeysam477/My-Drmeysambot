@@ -1,15 +1,13 @@
 import telebot
-import os
 from flask import Flask
 from threading import Thread
 
 # ۱. تنظیمات ربات
-API_TOKEN = '8979791105:AAFE_r734rshqOUfkaEDPSidXptpGxXIYHs'
+API_TOKEN = '8979791105:AAFE_r734rshq0Ufl' 
 bot = telebot.TeleBot(API_TOKEN)
-
-# ۲. بخش فریب دادن رندر (ساخت یک وب‌سایت فیک)
 app = Flask('')
 
+# ۲. بخش وب‌سایت برای رندر
 @app.route('/')
 def home():
     return "Bot is Running!"
@@ -24,15 +22,26 @@ def keep_alive():
 # ۳. دستورات ربات تلگرام
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "سلام! ربات شما در رندر با موفقیت فعال شد ✅")
+    bot.reply_to(message, "✅ ربات مدیریت با موفقیت فعال شد!")
 
-@bot.message_handler(func=lambda message: True)
-def echo_all(message):
-    bot.reply_to(message, message.text)
+@bot.message_handler(commands=['del'])
+def delete_message(message):
+    try:
+        if message.reply_to_message:
+            bot.delete_message(message.chat.id, message.reply_to_message.message_id)
+            bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
 
-# ۴. اجرای همزمان وب‌سایت و ربات
+@bot.message_handler(commands=['pin'])
+def pin_message(message):
+    try:
+        if message.reply_to_message:
+            bot.pin_chat_message(message.chat.id, message.reply_to_message.message_id)
+    except:
+        pass
+
+# ۴. اجرای همزمان
 if __name__ == "__main__":
-    keep_alive()  # این خط باعث می‌شود رندر ارور پورت ندهد
-    print("Bot is starting...")
+    keep_alive()
     bot.infinity_polling()
-
