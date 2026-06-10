@@ -1,6 +1,6 @@
-python-telegram-bot==20.7
-requests
+pyTelegramBotAPI
+flask
 pandas
 numpy
-flask
 gunicorn
+requests
