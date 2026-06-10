@@ -1,62 +1,66 @@
 import os
 import telebot
-import pandas as pd
-import numpy as np
 import requests
+import pandas as pd
 from flask import Flask
+from threading import Thread
 
-# تنظیمات توکن و سرور
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# لیست کلمات ممنوعه و فیلتر لینک
-BAD_WORDS = ['کلمه۱', 'کلمه۲'] # می‌توانید کلمات را اینجا اضافه کنید
-
-@bot.message_handler(func=lambda message: True)
-def filter_messages(message):
-    # ضد لینک
-    if 't.me/' in message.text or 'http' in message.text:
-        bot.delete_message(message.chat.id, message.message_id)
-        bot.send_message(message.chat.id, "❌ ارسال لینک مجاز نیست.")
-        return
-
-    # ضد فحش
-    if any(word in message.text for word in BAD_WORDS):
-        bot.delete_message(message.chat.id, message.message_id)
-        bot.send_message(message.chat.id, "⚠️ لطفا از کلمات مناسب استفاده کنید.")
-        return
-
-    # دستور استارت
-    if message.text == '/start':
-        bot.reply_to(message, "سلام! من ربات تحلیل‌گر نوبیتکس و مدیریت گروه هستم. برای دریافت سیگنال از /signal استفاده کنید.")
-
-# بخش تحلیل نوبیتکس
-@bot.message_handler(commands=['signal'])
-def get_signal(message):
+# تابع دریافت قیمت و تحلیل از نوبیتکس
+def get_nobitex_analysis(symbol):
     try:
-        symbol = message.text.split()[1].upper()
-        # در اینجا منطق تحلیل تکنیکال که قبلاً نوشتیم قرار می‌گیرد
-        bot.reply_to(message, f"📊 در حال تحلیل جفت ارز {symbol}...")
-    except:
-        bot.reply_to(message, "❌ لطفا نماد را درست وارد کنید. مثال: /signal BTCIRT")
+        # دریافت داده‌های بازار (شمعی)
+        url = f"https://api.nobitex.ir/market/udf/history?symbol={symbol}&resolution=60&from=1670000000&to=2000000000"
+        response = requests.get(url).json()
+        
+        if response['s'] != 'ok':
+            return "❌ نماد یافت نشد. مثال: BTCIRT"
 
-# مسیر سلامت برای Render (بسیار مهم)
+        df = pd.DataFrame({
+            'close': response['c'],
+            'high': response['h'],
+            'low': response['l']
+        })
+        
+        last_price = df['close'].iloc[-1]
+        
+        # یک محاسبه ساده RSI (نمونه)
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs.iloc[-1]))
+        
+        status = "💎 پیشنهاد: نگهداری"
+        if rsi < 30: status = "🟢 پیشنهاد: خرید (اشباع فروش)"
+        elif rsi > 70: status = "🔴 پیشنهاد: فروش (اشباع خرید)"
+        
+        return f"📊 تحلیل نماد: {symbol}\n💰 قیمت فعلی: {last_price:,}\n📈 شاخص RSI: {rsi:.2f}\n\n{status}"
+    except Exception as e:
+        return "❌ خطا در دریافت اطلاعات از نوبیتکس."
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "سلام دکتر میثم! ربات تحلیلگر آماده است.\nبرای دریافت سیگنال بنویسید:\n/signal BTCIRT")
+
+@bot.message_handler(commands=['signal'])
+def sign_command(message):
+    msg_parts = message.text.split()
+    if len(msg_parts) < 2:
+        bot.reply_to(message, "⚠️ لطفا نماد را وارد کنید.\nمثال: `/signal BTCIRT`", parse_mode="Markdown")
+        return
+    
+    symbol = msg_parts[1].upper()
+    bot.reply_to(message, "⌛ در حال تحلیل...")
+    result = get_nobitex_analysis(symbol)
+    bot.send_message(message.chat.id, result)
+
 @app.route('/')
-def health_check():
-    return "Bot is Running!", 200
+def health(): return "OK", 200
 
-# اجرای ربات
 if __name__ == "__main__":
-    print("Bot is starting...")
-    # حذف وب‌هوک قدیمی برای جلوگیری از تداخل
-    bot.remove_webhook()
-    # اجرای Flask در پس‌زمینه برای راضی نگه داشتن Render
-    from threading import Thread
-    def run_flask():
-        app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-    
-    Thread(target=run_flask).start()
-    
-    # اجرای اصلی ربات
+    Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))).start()
     bot.infinity_polling()
