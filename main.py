@@ -9,42 +9,35 @@ TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# تابع دریافت قیمت و تحلیل از نوبیتکس
-def get_nobitex_analysis(symbol):
+def get_nobitex_data(symbol):
     try:
-        # دریافت داده‌های بازار (شمعی)
-        url = f"https://api.nobitex.ir/market/udf/history?symbol={symbol}&resolution=60&from=1670000000&to=2000000000"
+        # استفاده از API عمومی نوبیتکس برای قیمت لحظه‌ای
+        url = "https://api.nobitex.ir/v2/orderbook/all"
         response = requests.get(url).json()
         
-        if response['s'] != 'ok':
-            return "❌ نماد یافت نشد. مثال: BTCIRT"
-
-        df = pd.DataFrame({
-            'close': response['c'],
-            'high': response['h'],
-            'low': response['l']
-        })
-        
-        last_price = df['close'].iloc[-1]
-        
-        # یک محاسبه ساده RSI (نمونه)
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs.iloc[-1]))
-        
-        status = "💎 پیشنهاد: نگهداری"
-        if rsi < 30: status = "🟢 پیشنهاد: خرید (اشباع فروش)"
-        elif rsi > 70: status = "🔴 پیشنهاد: فروش (اشباع خرید)"
-        
-        return f"📊 تحلیل نماد: {symbol}\n💰 قیمت فعلی: {last_price:,}\n📈 شاخص RSI: {rsi:.2f}\n\n{status}"
-    except Exception as e:
-        return "❌ خطا در دریافت اطلاعات از نوبیتکس."
+        if response['status'] == 'ok':
+            # پیدا کردن نماد در لیست (مثلاً BTCIRT)
+            pair = symbol.upper()
+            if pair in response:
+                last_price = response[pair]['lastTradePrice']
+                best_sell = response[pair]['asks'][0][0]
+                best_buy = response[pair]['bids'][0][0]
+                
+                return (f"📊 وضعیت بازار نوبیتکس:\n\n"
+                        f"💰 قیمت لحظه‌ای {symbol}: {int(last_price):,} ریال\n"
+                        f"📈 بهترین فروش: {int(best_sell):,}\n"
+                        f"📉 بهترین خرید: {int(best_buy):,}\n"
+                        f"✨ وضعیت: متصل به بازار")
+            else:
+                return "❌ این نماد در نوبیتکس یافت نشد.\nمثال صحیح: BTCIRT یا ETHIRT"
+        else:
+            return "❌ خطای موقت در ارتباط با صرافی."
+    except:
+        return "❌ سرور صرافی در دسترس نیست. لطفا کمی بعد امتحان کنید."
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "سلام دکتر میثم! ربات تحلیلگر آماده است.\nبرای دریافت سیگنال بنویسید:\n/signal BTCIRT")
+    bot.reply_to(message, "سلام! ربات تحلیل‌گر نوبیتکس آنلاین شد.\nبرای قیمت بنویسید:\n/signal BTCIRT")
 
 @bot.message_handler(commands=['signal'])
 def sign_command(message):
@@ -54,8 +47,8 @@ def sign_command(message):
         return
     
     symbol = msg_parts[1].upper()
-    bot.reply_to(message, "⌛ در حال تحلیل...")
-    result = get_nobitex_analysis(symbol)
+    bot.reply_to(message, "⌛ در حال استعلام قیمت از نوبیتکس...")
+    result = get_nobitex_data(symbol)
     bot.send_message(message.chat.id, result)
 
 @app.route('/')
