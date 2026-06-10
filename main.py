@@ -1,71 +1,61 @@
-import os
 import telebot
 import requests
 from flask import Flask
 from threading import Thread
+import os
 
-TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+# تنظیمات توکن و اپلیکیشن
+TOKEN = '7308703445:AAH_0N-R0N6_v7fC7zCjW0W5vW_9mY0mY8o' # توکن شما محفوظ است
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-def get_nobitex_price(symbol):
-    try:
-        # استفاده از API جایگزین که روی سرورهای خارجی بهتر جواب می‌دهد
-        url = "https://api.nobitex.ir/market/stats"
-        params = {'srcCurrency': symbol.replace('IRT', '').lower(), 'dstCurrency': 'rls'}
-        
-        # اگر کاربر نماد تتر خواست
-        if 'USDT' in symbol.upper():
-            params['srcCurrency'] = 'usdt'
+@app.route('/')
+def home():
+    return "Bot is Running!"
 
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        
-        if data['status'] == 'ok':
-            # نوبیتکس قیمت را به تومان (ریال حذف شده در نمایش) برمی‌گرداند
-            stats = data['stats']
-            # پیدا کردن کلید داینامیک (مثلاً btc-rls)
-            pair_key = f"{params['srcCurrency']}-rls"
-            
-            if pair_key in stats:
-                price = stats[pair_key]['latest']
-                change = stats[pair_key]['dayChange']
-                high = stats[pair_key]['dayHigh']
-                low = stats[pair_key]['dayLow']
-                
-                return (f"✅ استعلام موفق از نوبیتکس:\n\n"
-                        f"🪙 نماد: {symbol.upper()}\n"
-                        f"💰 قیمت فعلی: {int(float(price)*10):,} ریال\n"
-                        f"📈 بالاترین امروز: {int(float(high)*10):,}\n"
-                        f"📉 پایین‌ترین امروز: {int(float(low)*10):,}\n"
-                        f"📊 تغییر ۲۴ ساعته: {change}%\n"
-                        f"🟢 وضعیت: آنلاین")
-            else:
-                return "❌ نماد یافت نشد. مثال: BTCIRT"
-        else:
-            return "❌ صرافی پاسخ معتبری نداد."
-    except Exception as e:
-        return f"❌ خطا در اتصال به نوبیتکس. (سرور خارج محدود شده است)"
+def run_flask():
+    app.run(host="0.0.0.0", port=10000)
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "سلام! ربات تحلیل‌گر نوبیتکس آماده است.\nمثال: /signal BTCIRT")
+    bot.reply_to(message, "سلام! ربات تحلیلگر فعال شد.\nبرای دریافت قیمت از دستور زیر استفاده کنید:\n/signal BTCIRT")
 
 @bot.message_handler(commands=['signal'])
-def sign_command(message):
-    msg_parts = message.text.split()
-    if len(msg_parts) < 2:
-        bot.reply_to(message, "⚠️ لطفا نماد را وارد کنید.\nمثال: `/signal BTCIRT`", parse_mode="Markdown")
-        return
-    
-    symbol = msg_parts[1].upper()
-    bot.reply_to(message, f"⌛ در حال استعلام قیمت {symbol}...")
-    result = get_nobitex_price(symbol)
-    bot.send_message(message.chat.id, result)
+def get_signal(message):
+    try:
+        text = message.text.split()
+        if len(text) < 2:
+            bot.reply_to(message, "⚠️ لطفا نماد را وارد کنید.\nمثال: /signal BTCIRT")
+            return
+        
+        symbol = text[1].upper()
+        sent_msg = bot.reply_to(message, f"⌛ در حال استعلام قیمت {symbol} از نوبیتکس...")
+        
+        # استفاده از API جایگزین برای دور زدن محدودیت سرور خارجی
+        url = "https://api.nobitex.ir/market/stats"
+        params = {'srcCurrency': symbol.replace('IRT', '').lower(), 'dstCurrency': 'irt'}
+        
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
 
-@app.route('/')
-def health(): return "OK", 200
+        if data['status'] == 'ok':
+            stats = data['stats'][f"{params['srcCurrency']}-irt"]
+            msg = (f"✅ قیمت لحظه‌ای {symbol}:\n\n"
+                   f"💰 قیمت: {float(stats['latest']):,.0f} ریال\n"
+                   f"📈 تغییر ۲۴ ساعته: {stats['dayChange']}%\n"
+                   f"🔝 بیشترین امروز: {float(stats['dayHigh']):,.0f}\n"
+                   f"🔙 کمترین امروز: {float(stats['dayLow']):,.0f}")
+            bot.edit_message_text(msg, chat_id=message.chat.id, message_id=sent_msg.message_id)
+        else:
+            bot.edit_message_text("❌ نماد مورد نظر یافت نشد یا در نوبیتکس لیست نیست.", chat_id=message.chat.id, message_id=sent_msg.message_id)
+
+    except Exception as e:
+        bot.reply_to(message, "❌ خطا در برقراری ارتباط با صرافی. لطفا دوباره تلاش کنید.")
 
 if __name__ == "__main__":
-    Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))).start()
-    bot.infinity_polling()
+    # اجرای فلسک در یک ترد جداگانه
+    t = Thread(target=run_flask)
+    t.start()
+    # اجرای ربات
+    print("Bot is starting...")
+    bot.infinity_polling(non_stop=True, skip_pending=True)
