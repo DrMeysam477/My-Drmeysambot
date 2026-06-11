@@ -1,230 +1,401 @@
 import os
 import time
-import logging
+import math
+import json
+import threading
+import traceback
+from datetime import datetime, timezone
+
 import requests
 import pandas as pd
 import numpy as np
 import telebot
-from datetime import datetime
-from threading import Thread, Lock
 from flask import Flask
 
-# =========================================================
-# Logging
-# =========================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
 
-# =========================================================
-# Flask Web Server for Render
-# =========================================================
+# ============================================================
+# Environment Variables
+# ============================================================
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+ADMIN_ID = os.getenv("ADMIN_ID", "").strip()
+
+PORT = int(os.getenv("PORT", "10000"))
+
+TIMEFRAME = os.getenv("TIMEFRAME", "1h").strip()
+QUOTE_ASSET = os.getenv("QUOTE_ASSET", "USDT").strip().upper()
+
+MIN_SCORE_TO_SEND = float(os.getenv("MIN_SCORE_TO_SEND", "10"))
+SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))
+
+AUTO_SCAN = os.getenv("AUTO_SCAN", "True").strip().lower() in ["true", "1", "yes", "on"]
+
+# اگر این مقدار وجود نداشته باشد، پیش‌فرض 80 است تا ربات سنگین نشود.
+# اگر خواستی کل بازار USDT بایننس را اسکن کند، در Render بگذار:
+# SCAN_MARKET_LIMIT=0
+SCAN_MARKET_LIMIT = int(os.getenv("SCAN_MARKET_LIMIT", "80"))
+
+# تعداد بهترین خروجی‌ها برای گزارش
+SCAN_TOP_N = int(os.getenv("SCAN_TOP_N", "5"))
+
+# جلوگیری از ارسال سیگنال تکراری برای یک نماد در این مدت
+SIGNAL_COOLDOWN_SECONDS = int(os.getenv("SIGNAL_COOLDOWN_SECONDS", "1800"))
+
+# تعداد کندل برای تحلیل
+KLINE_LIMIT = int(os.getenv("KLINE_LIMIT", "210"))
+
+# Binance API keys فعلاً استفاده نمی‌شوند، چون دیتاهای عمومی کافی است.
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip()
+
+
+# ============================================================
+# Basic Validation
+# ============================================================
+
+if not TELEGRAM_BOT_TOKEN:
+    print("ERROR: TELEGRAM_BOT_TOKEN is not set.")
+
+if not ADMIN_ID:
+    print("WARNING: ADMIN_ID is not set. Bot can still run, but admin notifications may fail.")
+
+try:
+    ADMIN_CHAT_ID = int(ADMIN_ID) if ADMIN_ID else None
+except Exception:
+    ADMIN_CHAT_ID = None
+    print("WARNING: ADMIN_ID is not a valid integer.")
+
+
+# ============================================================
+# Flask App for Render
+# ============================================================
+
 app = Flask(__name__)
+
 
 @app.route("/")
 def home():
-    return "Bot is running and healthy!"
+    return {
+        "status": "ok",
+        "service": "telegram-binance-scanner",
+        "time": now_utc_string(),
+        "auto_scan": AUTO_SCAN,
+        "timeframe": TIMEFRAME,
+        "quote_asset": QUOTE_ASSET,
+        "min_score": MIN_SCORE_TO_SEND,
+    }
 
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
 
-# =========================================================
-# Environment Variables
-# =========================================================
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = os.environ.get("ADMIN_ID")
+@app.route("/health")
+def health():
+    return "OK", 200
 
-TIMEFRAME = os.environ.get("TIMEFRAME", "1h")
-QUOTE_ASSET = os.environ.get("QUOTE_ASSET", "USDT")
 
-MIN_SCORE = int(os.environ.get("MIN_SCORE_TO_SEND", 80))
+# ============================================================
+# Telegram Bot
+# ============================================================
 
-# اگر 0 باشد یعنی کل بازار اسکن شود
-SCAN_LIMIT = int(os.environ.get("SCAN_MARKET_LIMIT", 0))
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode="HTML")
 
-TOP_N = int(os.environ.get("SCAN_TOP_N", 3))
 
-# با همان متغیری که در Render گذاشتی سازگار شد
-INTERVAL = int(os.environ.get("SCAN_INTERVAL", os.environ.get("AUTO_INTERVAL_SECONDS", 300)))
-
-AUTO_SCAN = os.environ.get("AUTO_SCAN", "False").lower() in ["true", "1", "yes", "on"]
+# ============================================================
+# Global Runtime State
+# ============================================================
 
 BINANCE_BASE_URL = "https://api.binance.com"
 
-if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN is not set.")
+runtime_state = {
+    "started_at": time.time(),
+    "last_scan_at": None,
+    "last_scan_summary": None,
+    "last_error": None,
+    "auto_scan_enabled": AUTO_SCAN,
+    "scan_running": False,
+}
 
-bot = telebot.TeleBot(TOKEN)
+last_signal_sent = {}
+symbols_cache = {
+    "symbols": [],
+    "updated_at": 0,
+}
 
-# =========================================================
-# Global State
-# =========================================================
-auto_scan_enabled = AUTO_SCAN
-last_auto_scan_time = None
-scan_lock = Lock()
 
-# اگر ADMIN_ID ست شده باشد اتواسکن برای همان آیدی پیام می‌فرستد
-admin_chat_id = int(ADMIN_ID) if ADMIN_ID and ADMIN_ID.isdigit() else None
+# ============================================================
+# Utility Functions
+# ============================================================
 
-# =========================================================
-# Binance Helpers
-# =========================================================
-def safe_get_json(url, params=None, timeout=15):
+def now_utc_string():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def safe_float(value, default=0.0):
     try:
-        response = requests.get(url, params=params, timeout=timeout)
-        response.raise_for_status()
-        return response.json()
+        if value is None:
+            return default
+        x = float(value)
+        if math.isnan(x) or math.isinf(x):
+            return default
+        return x
+    except Exception:
+        return default
+
+
+def send_admin_message(text):
+    """
+    ارسال پیام به ادمین.
+    اگر ADMIN_ID مشکل داشته باشد، فقط لاگ می‌گیرد و کرش نمی‌کند.
+    """
+    if not ADMIN_CHAT_ID:
+        print("send_admin_message skipped: ADMIN_CHAT_ID is not set.")
+        return False
+
+    try:
+        bot.send_message(ADMIN_CHAT_ID, text, disable_web_page_preview=True)
+        return True
     except Exception as e:
-        logging.error(f"Request error: {url} | {e}")
-        return None
+        print(f"Telegram send error: {e}")
+        runtime_state["last_error"] = f"Telegram send error: {e}"
+        return False
 
 
-def get_exchange_symbols():
+def is_admin(message):
     """
-    دریافت همه نمادهای فعال Spot از بایننس.
-    فقط نمادهایی که quoteAsset برابر USDT دارند و در حال معامله هستند.
+    اگر ADMIN_ID تنظیم شده باشد، فقط ادمین اجازه دستورات مهم را دارد.
     """
+    if not ADMIN_CHAT_ID:
+        return True
+
+    try:
+        return int(message.chat.id) == int(ADMIN_CHAT_ID)
+    except Exception:
+        return False
+
+
+def http_get_json(url, params=None, timeout=12, retries=3, sleep_between=1):
+    """
+    درخواست GET با retry ساده.
+    """
+    last_exception = None
+
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+
+            if response.status_code == 200:
+                return response.json()
+
+            # Rate limit یا خطاهای موقت
+            if response.status_code in [418, 429, 500, 502, 503, 504]:
+                print(f"HTTP {response.status_code} on {url}. Attempt {attempt}/{retries}")
+                time.sleep(sleep_between * attempt)
+                continue
+
+            print(f"HTTP error {response.status_code}: {response.text[:300]}")
+            return None
+
+        except Exception as e:
+            last_exception = e
+            print(f"Request error attempt {attempt}/{retries}: {e}")
+            time.sleep(sleep_between * attempt)
+
+    runtime_state["last_error"] = f"HTTP request failed: {last_exception}"
+    return None
+
+
+def format_price(price):
+    price = safe_float(price)
+    if price >= 1000:
+        return f"{price:,.2f}"
+    if price >= 1:
+        return f"{price:,.4f}"
+    if price >= 0.01:
+        return f"{price:,.6f}"
+    return f"{price:,.8f}"
+
+
+def format_percent(value):
+    value = safe_float(value)
+    return f"{value:.2f}%"
+
+
+# ============================================================
+# Binance Data
+# ============================================================
+
+def get_exchange_symbols(force_refresh=False):
+    """
+    دریافت همه نمادهای فعال Spot با quoteAsset مشخص، مثلاً USDT.
+    """
+    cache_age = time.time() - symbols_cache["updated_at"]
+
+    if symbols_cache["symbols"] and not force_refresh and cache_age < 3600:
+        return symbols_cache["symbols"]
+
     url = f"{BINANCE_BASE_URL}/api/v3/exchangeInfo"
-    data = safe_get_json(url)
+    data = http_get_json(url, timeout=15, retries=3)
 
     if not data or "symbols" not in data:
-        return []
+        print("Failed to fetch exchangeInfo.")
+        return symbols_cache["symbols"] or []
 
-    symbols = []
+    result = []
 
-    for item in data["symbols"]:
+    blocked_keywords = [
+        "UP", "DOWN", "BULL", "BEAR"
+    ]
+
+    for item in data.get("symbols", []):
         try:
-            if (
-                item.get("status") == "TRADING"
-                and item.get("quoteAsset") == QUOTE_ASSET
-                and item.get("isSpotTradingAllowed") is True
-            ):
-                symbol = item.get("symbol")
+            symbol = item.get("symbol", "")
+            status = item.get("status", "")
+            quote = item.get("quoteAsset", "")
+            is_spot_allowed = item.get("isSpotTradingAllowed", False)
 
-                # حذف برخی جفت‌های اهرمی یا نامناسب
-                blocked_words = [
-                    "UP", "DOWN", "BULL", "BEAR"
-                ]
+            if status != "TRADING":
+                continue
 
-                # این فیلتر خیلی سختگیرانه نیست، فقط توکن‌های لوریج‌دار قدیمی را حذف می‌کند
-                if any(word in symbol.replace(QUOTE_ASSET, "") for word in blocked_words):
-                    continue
+            if quote != QUOTE_ASSET:
+                continue
 
-                symbols.append(symbol)
+            if not is_spot_allowed:
+                continue
+
+            # حذف توکن‌های لوریج‌دار قدیمی اگر وجود داشته باشند
+            base_asset = item.get("baseAsset", "")
+            if any(base_asset.endswith(k) for k in blocked_keywords):
+                continue
+
+            result.append(symbol)
+
         except Exception:
             continue
 
-    return symbols
+    result = sorted(list(set(result)))
+
+    symbols_cache["symbols"] = result
+    symbols_cache["updated_at"] = time.time()
+
+    print(f"Loaded {len(result)} active {QUOTE_ASSET} spot symbols from Binance.")
+    return result
 
 
 def get_24h_tickers():
+    """
+    دریافت تیکرهای 24 ساعته کل بازار.
+    """
     url = f"{BINANCE_BASE_URL}/api/v3/ticker/24hr"
-    data = safe_get_json(url)
+    data = http_get_json(url, timeout=15, retries=3)
+
     if not isinstance(data, list):
+        return {}
+
+    result = {}
+    for item in data:
+        symbol = item.get("symbol")
+        if symbol:
+            result[symbol] = item
+
+    return result
+
+
+def select_symbols_for_scan():
+    """
+    انتخاب نمادها برای اسکن.
+    اگر SCAN_MARKET_LIMIT=0 باشد، همه نمادهای USDT فعال اسکن می‌شوند.
+    اگر عدد مثبت باشد، به ترتیب حجم 24h همان تعداد اول انتخاب می‌شود.
+    """
+    symbols = get_exchange_symbols()
+    if not symbols:
         return []
-    return data
 
-
-def get_market_symbols():
-    """
-    نمادهای قابل اسکن را می‌گیرد و بر اساس حجم دلاری ۲۴ ساعته مرتب می‌کند.
-    اگر SCAN_LIMIT = 0 باشد، کل نمادها را می‌دهد.
-    """
-    exchange_symbols = set(get_exchange_symbols())
     tickers = get_24h_tickers()
 
-    rows = []
+    enriched = []
+    for symbol in symbols:
+        ticker = tickers.get(symbol, {})
+        quote_volume = safe_float(ticker.get("quoteVolume", 0))
+        enriched.append((symbol, quote_volume))
 
-    for t in tickers:
-        symbol = t.get("symbol")
+    enriched.sort(key=lambda x: x[1], reverse=True)
 
-        if symbol not in exchange_symbols:
-            continue
+    if SCAN_MARKET_LIMIT > 0:
+        enriched = enriched[:SCAN_MARKET_LIMIT]
 
-        try:
-            quote_volume = float(t.get("quoteVolume", 0))
-        except Exception:
-            quote_volume = 0
-
-        rows.append({
-            "symbol": symbol,
-            "quoteVolume": quote_volume
-        })
-
-    rows = sorted(rows, key=lambda x: x["quoteVolume"], reverse=True)
-
-    symbols = [r["symbol"] for r in rows]
-
-    if SCAN_LIMIT > 0:
-        symbols = symbols[:SCAN_LIMIT]
-
-    return symbols
+    return [x[0] for x in enriched]
 
 
-def get_crypto_data(symbol, timeframe=TIMEFRAME, limit=260):
+def get_klines(symbol, interval=TIMEFRAME, limit=KLINE_LIMIT):
     """
-    دریافت کندل‌های قیمت از Binance.
+    دریافت کندل از Binance.
     """
+    url = f"{BINANCE_BASE_URL}/api/v3/klines"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit,
+    }
+
+    data = http_get_json(url, params=params, timeout=12, retries=2)
+
+    if not isinstance(data, list) or len(data) < 60:
+        return None
+
     try:
-        url = f"{BINANCE_BASE_URL}/api/v3/klines"
-        params = {
-            "symbol": symbol,
-            "interval": timeframe,
-            "limit": limit
-        }
+        df = pd.DataFrame(data, columns=[
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "close_time",
+            "quote_asset_volume",
+            "number_of_trades",
+            "taker_buy_base_asset_volume",
+            "taker_buy_quote_asset_volume",
+            "ignore",
+        ])
 
-        data = safe_get_json(url, params=params)
-
-        if not data or not isinstance(data, list):
-            return None
-
-        df = pd.DataFrame(
-            data,
-            columns=[
-                "timestamp",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "close_time",
-                "qav",
-                "num_trades",
-                "taker_base",
-                "taker_quote",
-                "ignore"
-            ]
-        )
-
-        numeric_cols = ["open", "high", "low", "close", "volume", "qav", "num_trades", "taker_base", "taker_quote"]
+        numeric_cols = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_asset_volume",
+            "number_of_trades",
+            "taker_buy_base_asset_volume",
+            "taker_buy_quote_asset_volume",
+        ]
 
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+        df.dropna(inplace=True)
 
-        df = df.dropna()
-
-        if len(df) < 220:
+        if len(df) < 60:
             return None
 
         return df
 
     except Exception as e:
-        logging.error(f"get_crypto_data error for {symbol}: {e}")
+        print(f"Error parsing klines for {symbol}: {e}")
         return None
 
-# =========================================================
+
+# ============================================================
 # Indicators
-# =========================================================
+# ============================================================
+
+def ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
+
+
 def calculate_rsi(close, period=14):
     delta = close.diff()
 
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
@@ -232,488 +403,29 @@ def calculate_rsi(close, period=14):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
 
-    return rsi
+    return rsi.fillna(50)
 
 
 def calculate_macd(close, fast=12, slow=26, signal=9):
-    ema_fast = close.ewm(span=fast, adjust=False).mean()
-    ema_slow = close.ewm(span=slow, adjust=False).mean()
-
+    ema_fast = ema(close, fast)
+    ema_slow = ema(close, slow)
     macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    signal_line = ema(macd_line, signal)
     histogram = macd_line - signal_line
 
     return macd_line, signal_line, histogram
 
 
 def calculate_atr(df, period=14):
-    high_low = df["high"] - df["low"]
-    high_close = np.abs(df["high"] - df["close"].shift())
-    low_close = np.abs(df["low"] - df["close"].shift())
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
 
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr = tr.rolling(window=period).mean()
+    previous_close = close.shift(1)
 
-    return atr
+    tr1 = high - low
+    tr2 = (high - previous_close).abs()
+    tr3 = (low - previous_close).abs()
 
-
-def calculate_indicators(df):
-    df = df.copy()
-
-    df["rsi"] = calculate_rsi(df["close"], 14)
-
-    df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
-    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
-    df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
-
-    macd_line, macd_signal, macd_hist = calculate_macd(df["close"])
-    df["macd"] = macd_line
-    df["macd_signal"] = macd_signal
-    df["macd_hist"] = macd_hist
-
-    df["atr"] = calculate_atr(df, 14)
-
-    df["volume_ma20"] = df["volume"].rolling(window=20).mean()
-
-    return df
-
-# =========================================================
-# Analysis Helpers
-# =========================================================
-def analyze_whale_activity(df):
-    try:
-        avg_vol = df["volume"].iloc[-21:-1].mean()
-        current_vol = df["volume"].iloc[-1]
-
-        if avg_vol <= 0:
-            return "Normal", 1.0
-
-        ratio = current_vol / avg_vol
-
-        if ratio >= 3:
-            return "Very High", ratio
-        elif ratio >= 2:
-            return "High", ratio
-        elif ratio >= 1.4:
-            return "Medium", ratio
-        else:
-            return "Normal", ratio
-
-    except Exception:
-        return "Unknown", 0
-
-
-def detect_trend(last):
-    if last["close"] > last["ema20"] > last["ema50"] > last["ema200"]:
-        return "Strong Bullish"
-    elif last["close"] > last["ema20"] and last["ema20"] > last["ema50"]:
-        return "Bullish"
-    elif last["close"] < last["ema20"] < last["ema50"] < last["ema200"]:
-        return "Strong Bearish"
-    elif last["close"] < last["ema20"] and last["ema20"] < last["ema50"]:
-        return "Bearish"
-    else:
-        return "Neutral"
-
-
-def detect_breakout(df):
-    """
-    بررسی شکست سقف ۲۰ کندل اخیر.
-    """
-    try:
-        last_close = df["close"].iloc[-1]
-        previous_high = df["high"].iloc[-21:-1].max()
-
-        if last_close > previous_high:
-            return True
-
-        return False
-
-    except Exception:
-        return False
-
-
-def backtest_strategy(df, lookahead=10):
-    """
-    بک‌تست ساده و سبک.
-    چون در لحظه آینده نداریم، این فقط وضعیت گذشته نزدیک را تخمین می‌زند.
-    """
-    try:
-        recent = df.iloc[-80:].copy()
-
-        wins = 0
-        total = 0
-
-        for i in range(20, len(recent) - lookahead):
-            row = recent.iloc[i]
-            future = recent.iloc[i + 1:i + 1 + lookahead]
-
-            if row["rsi"] < 40 and row["macd"] > row["macd_signal"] and row["close"] > row["ema20"]:
-                entry = row["close"]
-                future_max = future["high"].max()
-                future_min = future["low"].min()
-
-                target = entry * 1.015
-                stop = entry * 0.985
-
-                total += 1
-
-                if future_max >= target and future_min > stop:
-                    wins += 1
-
-        if total == 0:
-            return "Not enough similar setups"
-
-        rate = round((wins / total) * 100, 1)
-
-        if rate >= 65:
-            return f"High - {rate}%"
-        elif rate >= 50:
-            return f"Medium - {rate}%"
-        else:
-            return f"Low - {rate}%"
-
-    except Exception:
-        return "Unknown"
-
-
-def scoring_logic(df):
-    """
-    امتیازدهی از ۰ تا ۱۰۰.
-    """
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    score = 0
-    reasons = []
-
-    # RSI
-    if 30 <= last["rsi"] <= 45:
-        score += 18
-        reasons.append("RSI in accumulation zone")
-    elif last["rsi"] < 30:
-        score += 12
-        reasons.append("RSI oversold")
-    elif 45 < last["rsi"] <= 60:
-        score += 8
-        reasons.append("RSI healthy")
-    elif last["rsi"] > 75:
-        score -= 10
-        reasons.append("RSI overbought")
-
-    # MACD
-    if last["macd"] > last["macd_signal"]:
-        score += 18
-        reasons.append("MACD bullish")
-    else:
-        score -= 5
-
-    if last["macd_hist"] > prev["macd_hist"]:
-        score += 8
-        reasons.append("MACD histogram improving")
-
-    # EMA trend
-    if last["close"] > last["ema20"]:
-        score += 10
-        reasons.append("Price above EMA20")
-
-    if last["ema20"] > last["ema50"]:
-        score += 10
-        reasons.append("EMA20 above EMA50")
-
-    if last["close"] > last["ema200"]:
-        score += 12
-        reasons.append("Price above EMA200")
-
-    # Trend
-    trend = detect_trend(last)
-
-    if trend == "Strong Bullish":
-        score += 12
-        reasons.append("Strong bullish trend")
-    elif trend == "Bullish":
-        score += 8
-        reasons.append("Bullish trend")
-    elif trend == "Strong Bearish":
-        score -= 15
-        reasons.append("Strong bearish trend")
-
-    # Volume / Whale
-    whale, volume_ratio = analyze_whale_activity(df)
-
-    if whale == "Very High":
-        score += 15
-        reasons.append("Very high volume spike")
-    elif whale == "High":
-        score += 10
-        reasons.append("High volume spike")
-    elif whale == "Medium":
-        score += 5
-        reasons.append("Medium volume increase")
-
-    # Breakout
-    breakout = detect_breakout(df)
-
-    if breakout:
-        score += 10
-        reasons.append("Breakout above recent high")
-
-    # کنترل نهایی
-    score = max(0, min(int(score), 100))
-
-    return score, whale, volume_ratio, trend, breakout, reasons
-
-# =========================================================
-# Signal Generator
-# =========================================================
-def generate_signal(symbol):
-    df = get_crypto_data(symbol, TIMEFRAME, limit=260)
-
-    if df is None or len(df) < 220:
-        return None
-
-    df = calculate_indicators(df)
-    df = df.dropna()
-
-    if len(df) < 200:
-        return None
-
-    score, whale, volume_ratio, trend, breakout, reasons = scoring_logic(df)
-
-    if score < MIN_SCORE:
-        return None
-
-    last = df.iloc[-1]
-
-    price = float(last["close"])
-    atr = float(last["atr"])
-
-    if atr <= 0 or np.isnan(atr):
-        return None
-
-    signal = {
-        "symbol": symbol,
-        "timeframe": TIMEFRAME,
-        "price": round(price, 8),
-        "score": score,
-        "whale": whale,
-        "volume_ratio": round(float(volume_ratio), 2),
-        "rsi": round(float(last["rsi"]), 2),
-        "macd": round(float(last["macd"]), 8),
-        "macd_signal": round(float(last["macd_signal"]), 8),
-        "macd_hist": round(float(last["macd_hist"]), 8),
-        "ema20": round(float(last["ema20"]), 8),
-        "ema50": round(float(last["ema50"]), 8),
-        "ema200": round(float(last["ema200"]), 8),
-        "trend": trend,
-        "breakout": breakout,
-        "tp1": round(price + atr * 1.5, 8),
-        "tp2": round(price + atr * 2.5, 8),
-        "tp3": round(price + atr * 3.5, 8),
-        "tp4": round(price + atr * 5.0, 8),
-        "sl": round(price - atr * 2.0, 8),
-        "backtest": backtest_strategy(df),
-        "reasons": reasons,
-        "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    }
-
-    return signal
-
-# =========================================================
-# Telegram Message
-# =========================================================
-def send_telegram_signal(signal, chat_id):
-    reasons_text = "\n".join([f"• {r}" for r in signal["reasons"][:6]])
-
-    template = f"""
-🚀 <b>Signal: #{signal['symbol']}</b>
-⏱ <b>Timeframe:</b> {signal['timeframe']}
-📊 <b>Score:</b> {signal['score']}/100
-
-💵 <b>Price:</b> <code>{signal['price']}</code>
-
-📈 <b>RSI:</b> {signal['rsi']}
-📊 <b>MACD:</b> <code>{signal['macd']}</code>
-📊 <b>MACD Signal:</b> <code>{signal['macd_signal']}</code>
-📊 <b>MACD Hist:</b> <code>{signal['macd_hist']}</code>
-
-📉 <b>EMA20:</b> <code>{signal['ema20']}</code>
-📉 <b>EMA50:</b> <code>{signal['ema50']}</code>
-📉 <b>EMA200:</b> <code>{signal['ema200']}</code>
-
-🐋 <b>Whale Activity:</b> {signal['whale']} x{signal['volume_ratio']}
-📌 <b>Trend:</b> {signal['trend']}
-🚧 <b>Breakout:</b> {signal['breakout']}
-🧪 <b>Backtest:</b> {signal['backtest']}
-
-🎯 <b>Targets:</b>
-1️⃣ TP1: <code>{signal['tp1']}</code>
-2️⃣ TP2: <code>{signal['tp2']}</code>
-3️⃣ TP3: <code>{signal['tp3']}</code>
-4️⃣ TP4: <code>{signal['tp4']}</code>
-
-⛔️ <b>Stop Loss:</b> <code>{signal['sl']}</code>
-
-✅ <b>Reasons:</b>
-{reasons_text}
-
-🕒 <b>Time:</b> {signal['time']}
-
-#Crypto #Trading #Signal
-"""
-
-    bot.send_message(chat_id, template, parse_mode="HTML")
-
-# =========================================================
-# Market Scanner
-# =========================================================
-def scan_market(chat_id, silent=False):
-    if not scan_lock.acquire(blocking=False):
-        if not silent:
-            bot.send_message(chat_id, "⏳ یک اسکن دیگر در حال اجراست. لطفاً صبر کن.")
-        return
-
-    try:
-        if not silent:
-            bot.send_message(
-                chat_id,
-                f"🔍 شروع اسکن بازار...\n"
-                f"⏱ تایم‌فریم: {TIMEFRAME}\n"
-                f"🎯 حداقل امتیاز ارسال: {MIN_SCORE}\n"
-                f"📌 محدودیت اسکن: {'کل بازار' if SCAN_LIMIT == 0 else SCAN_LIMIT}"
-            )
-
-        symbols = get_market_symbols()
-
-        if not symbols:
-            bot.send_message(chat_id, "❌ هیچ نمادی برای اسکن پیدا نشد.")
-            return
-
-        logging.info(f"Scanning {len(symbols)} symbols...")
-
-        found = 0
-        checked = 0
-
-        for symbol in symbols:
-            checked += 1
-
-            try:
-                signal = generate_signal(symbol)
-
-                if signal:
-                    send_telegram_signal(signal, chat_id)
-                    found += 1
-
-                    if found >= TOP_N:
-                        break
-
-                # جلوگیری از فشار زیاد به API
-                time.sleep(0.12)
-
-            except Exception as e:
-                logging.error(f"Symbol scan error {symbol}: {e}")
-                continue
-
-        if found == 0:
-            bot.send_message(
-                chat_id,
-                f"✅ اسکن کامل شد.\n"
-                f"تعداد بررسی‌شده: {checked}\n"
-                f"فعلاً سیگنال با امتیاز بالاتر از {MIN_SCORE} پیدا نشد."
-            )
-        else:
-            bot.send_message(
-                chat_id,
-                f"✅ اسکن کامل شد.\n"
-                f"تعداد بررسی‌شده: {checked}\n"
-                f"تعداد سیگنال ارسال‌شده: {found}"
-            )
-
-    except Exception as e:
-        logging.error(f"Scan error: {e}")
-        bot.send_message(chat_id, f"❌ خطا در اسکن بازار:\n<code>{e}</code>", parse_mode="HTML")
-
-    finally:
-        scan_lock.release()
-
-# =========================================================
-# Auto Scan
-# =========================================================
-def auto_scan_loop():
-    global auto_scan_enabled, last_auto_scan_time
-
-    logging.info("Auto scan loop started.")
-
-    while True:
-        try:
-            if auto_scan_enabled and admin_chat_id:
-                last_auto_scan_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-                logging.info("Running auto scan...")
-                scan_market(admin_chat_id, silent=True)
-
-            time.sleep(INTERVAL)
-
-        except Exception as e:
-            logging.error(f"Auto scan loop error: {e}")
-            time.sleep(30)
-
-# =========================================================
-# Telegram Handlers
-# =========================================================
-@bot.message_handler(commands=["start"])
-def welcome(message):
-    global admin_chat_id
-
-    if not admin_chat_id:
-        admin_chat_id = message.chat.id
-
-    text = f"""
-🤖 ربات تحلیل‌گر کریپتو فعال است.
-
-دستورات:
-
-/scan
-اسکن دستی بازار
-
-/auto_on
-فعال‌سازی اسکن خودکار
-
-/auto_off
-خاموش کردن اسکن خودکار
-
-/status
-نمایش وضعیت ربات
-
-تنظیمات فعلی:
-⏱ Timeframe: {TIMEFRAME}
-🎯 Min Score: {MIN_SCORE}
-🔁 Interval: {INTERVAL} seconds
-📌 Scan Limit: {'کل بازار' if SCAN_LIMIT == 0 else SCAN_LIMIT}
-"""
-
-    bot.reply_to(message, text)
-
-
-@bot.message_handler(commands=["scan"])
-def manual_scan(message):
-    scan_market(message.chat.id)
-
-
-@bot.message_handler(commands=["auto_on):
-    global auto_scan_enabled, admin_chat_id
-
-    admin_chat_id = message.chat.id
-    auto_scan_enabled = True
-
-    bot.reply_to(
-        message,
-        f"✅ اسکن خودکار فعال شد.\n"
-        f"هر {INTERVAL} ثانیه یک‌بار بازار اسکن می‌شود."
-    )
-
-
-@bot.message_handler(commands=["auto_off"])
-def auto_off(message):
-    global auto_scan_enabled
-
-    auto_scan_enabled =
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = true_range.ewm(alpha=1 / period, min_periods=period
