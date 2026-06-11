@@ -2,6 +2,6 @@ python-telegram-bot==20.3
 flask
 gunicorn
 requests
-pandas
-pandas_ta
-numpy
+pandas==1.5.3
+pandas_ta==0.3.14b0
+numpy==1.23.5
