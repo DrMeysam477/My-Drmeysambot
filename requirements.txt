@@ -1,6 +1,4 @@
 pyTelegramBotAPI
+requests
 flask
 pandas
-numpy
-gunicorn
-requests
