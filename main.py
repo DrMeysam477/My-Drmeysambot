@@ -1,67 +1,63 @@
 import os
-import pandas as pd
 import requests
 from flask import Flask
+import threading
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# تنظیمات وب‌سرور برای زنده نگه داشتن ربات در رندر
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "Bot is Live!"
 
-# تابع ساده برای محاسبه RSI بدون نیاز به کتابخانه خارجی
-def calculate_rsi(data, window=14):
-    delta = data.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
+# محاسبه RSI بدون پانداز
+def calculate_rsi_simple(prices, period=14):
+    if len(prices) < period + 1:
+        return 50
+    deltas = [prices[i+1] - prices[i] for i in range(len(prices)-1)]
+    gains = [d if d > 0 else 0 for d in deltas]
+    losses = [-d if d < 0 else 0 for d in deltas]
+    
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    
+    if avg_loss == 0: return 100
+    rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 async def get_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    symbol = "BTCUSDT"
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
-    
     try:
-        response = requests.get(url).json()
-        df = pd.DataFrame(response, columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'close_ts', 'qav', 'num_trades', 'taker_base', 'taker_quote', 'ignore'])
-        df['close'] = df['close'].astype(float)
+        symbol = "BTCUSDT"
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=50"
+        data = requests.get(url).json()
         
-        # محاسبه شاخص‌ها به صورت دستی
-        rsi = calculate_rsi(df['close']).iloc[-1]
-        sma = df['close'].rolling(window=20).mean().iloc[-1]
-        current_price = df['close'].iloc[-1]
+        # استخراج قیمت‌های بسته شدن
+        closes = [float(x[4]) for x in data]
+        current_price = closes[-1]
+        rsi = calculate_rsi_simple(closes)
         
-        msg = f"📊 تحلیل {symbol}:\n"
-        msg += f"💰 قیمت: {current_price}\n"
-        msg += f"📉 RSI: {rsi:.2f}\n"
-        msg += f"📈 SMA(20): {sma:.2f}\n\n"
+        msg = f"📊 وضعیت {symbol}:\n💰 قیمت: {current_price}\n📉 RSI: {rsi:.2f}\n\n"
+        if rsi < 35: msg += "✅ سیگنال خرید"
+        elif rsi > 65: msg += "❌ سیگنال فروش"
+        else: msg += "😐 وضعیت خنثی"
         
-        if rsi < 30:
-            msg += "✅ سیگنال: اشباع فروش (خرید)"
-        elif rsi > 70:
-            msg += "❌ سیگنال: اشباع خرید (فروش)"
-        else:
-            msg += "😐 سیگنال: خنثی"
-            
         await update.message.reply_text(msg)
     except Exception as e:
-        await update.message.reply_text("خطا در دریافت اطلاعات")
+        await update.message.reply_text(f"خطا در تحلیل")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! برای دریافت وضعیت بازار دستور /signal را بفرستید.")
+    await update.message.reply_text("ربات فعال شد! از /signal استفاده کنید.")
 
 if __name__ == '__main__':
     TOKEN = os.environ.get("BOT_TOKEN")
-    # اجرای وب‌سرور در پس‌زمینه
-    import threading
-    port = int(os.environ.get("PORT", 10000))
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=port)).start()
+    PORT = int(os.environ.get("PORT", 10000))
+    
+    # اجرای Flask در ترد جداگانه
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=PORT)).start()
     
     # اجرای ربات تلگرام
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("signal", get_signal))
-    application.run_polling()
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("signal", get_signal))
+    app_bot.run_polling()
