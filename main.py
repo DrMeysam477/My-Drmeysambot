@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot is Running"
+    return "Bot is Active"
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
@@ -18,38 +18,35 @@ def run_flask():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "✅ ربات آماده است!\nمثال: /signal BTCUSDT")
+    bot.reply_to(message, "✅ ربات با منبع جدید فعال شد!\nمثال: /signal BTC")
 
 @bot.message_handler(commands=['signal'])
 def get_signal(message):
     try:
         parts = message.text.split()
         if len(parts) < 2:
-            bot.reply_to(message, "مثال: /signal BTCUSDT")
+            bot.reply_to(message, "مثال: /signal BTC")
             return
         
-        symbol = parts[1].upper().strip()
+        # در این منبع، فقط نماد اصلی کافی است (مثل BTC به جای BTCUSDT)
+        symbol = parts[1].upper().replace("USDT", "").strip()
         
-        # هدر برای دور زدن مسدودی صرافی (شبیه‌سازی مرورگر)
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-
-        # استفاده از API جایگزین (Binance) اگر Bybit باز هم اذیت کرد
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        # استفاده از منبع CryptoCompare که روی سرورها محدودیت کمتری دارد
+        url = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USDT"
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            price = data.get("price")
-            # رند کردن قیمت برای زیبایی
-            formatted_price = "{:,.2f}".format(float(price))
-            bot.reply_to(message, f"💰 قیمت لحظه‌ای {symbol}\n\n💵 قیمت: {formatted_price} USDT")
-        elif response.status_code == 400:
-            bot.reply_to(message, f"❌ نماد {symbol} اشتباه است. (مثال درست: BTCUSDT)")
+            if "USDT" in data:
+                price = data["USDT"]
+                # فرمت‌دهی عدد
+                formatted_price = "{:,.2f}".format(float(price))
+                bot.reply_to(message, f"💰 قیمت لحظه‌ای {symbol}\n\n💵 قیمت: {formatted_price} USDT")
+            else:
+                bot.reply_to(message, f"❌ نماد {symbol} معتبر نیست.")
         else:
-            bot.reply_to(message, f"❌ صرافی پاسخ نداد (کد {response.status_code})")
+            bot.reply_to(message, f"❌ خطا در استعلام (کد {response.status_code})")
 
     except Exception as e:
         bot.reply_to(message, f"❌ خطا: {str(e)}")
