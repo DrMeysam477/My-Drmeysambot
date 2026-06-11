@@ -1,6 +1,7 @@
-python-telegram-bot==20.8
-requests==2.31.0
-pandas==2.1.4
-pandas-ta==0.3.14b0
-flask==3.0.0
-gunicorn==21.2.0
+python-telegram-bot==20.3
+flask
+gunicorn
+requests
+pandas
+pandas_ta
+numpy
