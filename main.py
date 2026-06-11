@@ -125,7 +125,7 @@ def get_signal(message):
     
     wait_msg = bot.reply_to(message, f"🔍 در حال تحلیل فنی {symbol}...")
     
-    df, info = get_data(symbol)
+    df, info = get_coingecko_data(symbol)
     
     if df is not None and len(df) > 30:
         close = df['close']
@@ -135,13 +135,13 @@ def get_signal(message):
         
         status = "Neutral ⚪"
         if rsi > 70: status = "اشباع خرید (احتمال اصلاح) 🔴"
-        elif rs < 30: status = "اشباع فروش (فرصت خرید) 🟢"
+        elif rsi < 30: status = "اشباع فروش (فرصت خرید) 🟢"
         
         trend = "صعودی 📈" if current_price > ema20 else "نزولی 📉"
         
         msg = (f"📊 **تحلیل تکنیکال {symbol}**\n"
                f"━━━━━━━━━━━━━━\n"
-               f"💰 قیمت: `${current_price}`\n"
+               f"💰 قیمت: `${current_price:,.2f}`\n"
                f"📈 روند (EMA20): {trend}\n"
                f"📊 شاخص RSI: `{rsi:.2f}`\n"
                f"📢 وضعیت: {status}\n"
@@ -149,4 +149,10 @@ def get_signal(message):
                f"⚠️ این یک پیشنهاد مالی نیست.")
         bot.edit_message_text(msg, chat_id=wait_msg.chat.id, message_id=wait_msg.message_id, parse_mode="Markdown")
     else:
-        bot.edit_message_text("❌ خطا در دریافت داده‌های تحلیل.", chat_id=wait_msg.chat.id, message_id=wait
+        bot.edit_message_text("❌ خطا در دریافت داده‌های تحلیل.", chat_id=wait_msg.chat.id, message_id=wait_msg.message_id)
+
+# --- اجرای ربات ---
+if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
+    print("Bot is starting...")
+    bot.infinity_polling()
