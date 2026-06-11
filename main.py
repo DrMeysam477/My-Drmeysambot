@@ -9,6 +9,10 @@ import time
 
 # --- تنظیمات اولیه ---
 TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is not set")
+
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
@@ -34,8 +38,8 @@ def health_check():
     return "Bot is alive and healthy!", 200
 
 def run_flask():
-    # پورت 10000 الزامی برای Render
-    app.run(host='0.0.0.0', port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 # --- توابع کمکی تحلیل و دریافت داده ---
 
@@ -97,9 +101,17 @@ def debug_bot(message):
     sent = bot.reply_to(message, "⏳ در حال بررسی وضعیت شبکه...")
     df, info = get_coingecko_data("BTC")
     if info:
-        bot.edit_message_text(f"✅ اتصال برقرار است.\n💰 قیمت بیت‌کوین: {info['price']:,}$", chat_id=sent.chat.id, message_id=sent.message_id)
+        bot.edit_message_text(
+            f"✅ اتصال برقرار است.\n💰 قیمت بیت‌کوین: {info['price']:,}$",
+            chat_id=sent.chat.id,
+            message_id=sent.message_id
+        )
     else:
-        bot.edit_message_text("❌ خطا در اتصال به CoinGecko. احتمال Rate Limit.", chat_id=sent.chat.id, message_id=sent.message_id)
+        bot.edit_message_text(
+            "❌ خطا در اتصال به CoinGecko. احتمال Rate Limit.",
+            chat_id=sent.chat.id,
+            message_id=sent.message_id
+        )
 
 @bot.message_handler(commands=['price'])
 def show_price(message):
@@ -109,11 +121,13 @@ def show_price(message):
     df, info = get_coingecko_data(symbol)
     if info:
         emoji = "🟢" if info['change'] >= 0 else "🔴"
-        msg = (f"💰 **قیمت لحظه‌ای {symbol}**\n"
-               f"━━━━━━━━━━━━━━\n"
-               f"💵 قیمت: `${info['price']:,.2f}`\n"
-               f"{emoji} تغییرات ۲۴ساعته: `{info['change']:.2f}%`\n"
-               f"📍 منبع: CoinGecko")
+        msg = (
+            f"💰 **قیمت لحظه‌ای {symbol}**\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"💵 قیمت: `${info['price']:,.2f}`\n"
+            f"{emoji} تغییرات ۲۴ساعته: `{info['change']:.2f}%`\n"
+            f"📍 منبع: CoinGecko"
+        )
         bot.reply_to(message, msg, parse_mode="Markdown")
     else:
         bot.reply_to(message, f"❌ ارز `{symbol}` یافت نشد یا در لیست پشتیبانی نیست.", parse_mode="Markdown")
@@ -134,25 +148,39 @@ def get_signal(message):
         current_price = info['price']
         
         status = "Neutral ⚪"
-        if rsi > 70: status = "اشباع خرید (احتمال اصلاح) 🔴"
-        elif rsi < 30: status = "اشباع فروش (فرصت خرید) 🟢"
+        if rsi > 70:
+            status = "اشباع خرید (احتمال اصلاح) 🔴"
+        elif rsi < 30:
+            status = "اشباع فروش (فرصت خرید) 🟢"
         
         trend = "صعودی 📈" if current_price > ema20 else "نزولی 📉"
         
-        msg = (f"📊 **تحلیل تکنیکال {symbol}**\n"
-               f"━━━━━━━━━━━━━━\n"
-               f"💰 قیمت: `${current_price:,.2f}`\n"
-               f"📈 روند (EMA20): {trend}\n"
-               f"📊 شاخص RSI: `{rsi:.2f}`\n"
-               f"📢 وضعیت: {status}\n"
-               f"━━━━━━━━━━━━━━\n"
-               f"⚠️ این یک پیشنهاد مالی نیست.")
-        bot.edit_message_text(msg, chat_id=wait_msg.chat.id, message_id=wait_msg.message_id, parse_mode="Markdown")
+        msg = (
+            f"📊 **تحلیل تکنیکال {symbol}**\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"💰 قیمت: `${current_price:,.2f}`\n"
+            f"📈 روند (EMA20): {trend}\n"
+            f"📊 شاخص RSI: `{rsi:.2f}`\n"
+            f"📢 وضعیت: {status}\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"⚠️ این یک پیشنهاد مالی نیست."
+        )
+        bot.edit_message_text(
+            msg,
+            chat_id=wait_msg.chat.id,
+            message_id=wait_msg.message_id,
+            parse_mode="Markdown"
+        )
     else:
-        bot.edit_message_text("❌ خطا در دریافت داده‌های تحلیل.", chat_id=wait_msg.chat.id, message_id=wait_msg.message_id)
+        bot.edit_message_text(
+            "❌ خطا در دریافت داده‌های تحلیل.",
+            chat_id=wait_msg.chat.id,
+            message_id=wait_msg.message_id
+        )
 
 # --- اجرای ربات ---
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     print("Bot is starting...")
-    bot.infinity_polling()
+    bot.remove_webhook()
+    bot.infinity_polling(none_stop=True, timeout=60)
