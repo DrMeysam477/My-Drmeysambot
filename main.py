@@ -1,186 +1,90 @@
-import telebot
+import os
+import logging
 import requests
 import pandas as pd
-import numpy as np
+import pandas_ta as ta
 from flask import Flask
-import threading
-import os
-import time
+from threading import Thread
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- تنظیمات اولیه ---
-TOKEN = os.getenv("BOT_TOKEN")
+# تنظیمات لاگ برای عیب‌یابی
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-if not TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is not set")
+# --- بخش وب‌سرور برای رندر ---
+app = Flask('')
 
-bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
-
-# هدر برای جلوگیری از مسدود شدن توسط CoinGecko
-HEADERS = {
-    "accept": "application/json",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
-
-# نقشه تبدیل نمادها به IDهای کوین‌گکو
-COIN_MAP = {
-    "BTC": "bitcoin", "ETH": "ethereum", "BNB": "binancecoin", "SOL": "solana",
-    "XRP": "ripple", "ADA": "cardano", "DOGE": "dogecoin", "TRX": "tron",
-    "TON": "the-open-network", "AVAX": "avalanche-2", "DOT": "polkadot",
-    "LINK": "chainlink", "MATIC": "matic-network", "POL": "polygon-ecosystem-token",
-    "LTC": "litecoin", "BCH": "bitcoin-cash", "UNI": "uniswap", "NEAR": "near",
-    "ARB": "arbitrum", "OP": "optimism", "PEPE": "pepe", "SHIB": "shiba-inu"
-}
-
-# --- بخش Flask برای زنده نگه داشتن در Render ---
 @app.route('/')
-def health_check():
-    return "Bot is alive and healthy!", 200
+def home():
+    return "Bot is running!"
 
-def run_flask():
+def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host='0.0.0.0', port=port)
 
-# --- توابع کمکی تحلیل و دریافت داده ---
-
-def clean_symbol(symbol):
-    s = symbol.upper().replace("/", "").replace("USDT", "").strip()
-    return s
-
-def get_coingecko_data(symbol):
-    """دریافت قیمت و داده‌های چارت از CoinGecko"""
-    s = clean_symbol(symbol)
-    coin_id = COIN_MAP.get(s)
-    
-    if not coin_id:
-        return None, None
-
+# --- بخش تحلیل تکنیکال ---
+def get_crypto_data(symbol="bitcoin"):
     try:
-        # دریافت قیمت لحظه‌ای و تغییرات
-        price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true"
-        r_price = requests.get(price_url, headers=HEADERS, timeout=15).json()
+        url = f"https://api.coingecko.com/api/v3/coins/{symbol}/market_chart"
+        params = {'vs_currency': 'usd', 'days': '30', 'interval': 'daily'}
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
         
-        current_price = r_price[coin_id]['usd']
-        change_24h = r_price[coin_id]['usd_24h_change']
-
-        # دریافت داده‌های ۷ روز اخیر برای تحلیل
-        chart_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=7"
-        r_chart = requests.get(chart_url, headers=HEADERS, timeout=15).json()
-        
-        prices = [p[1] for p in r_chart['prices']]
+        prices = [x[1] for x in data['prices']]
         df = pd.DataFrame(prices, columns=['close'])
         
-        return df, {"price": current_price, "change": change_24h}
+        # محاسبه RSI و EMA
+        df['rsi'] = ta.rsi(df['close'], length=14)
+        df['ema'] = ta.ema(df['close'], length=20)
+        
+        last_price = df['close'].iloc[-1]
+        last_rsi = df['rsi'].iloc[-1]
+        last_ema = df['ema'].iloc[-1]
+        
+        return last_price, last_rsi, last_ema
     except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
-        return None, None
+        logging.error(f"Error fetching data: {e}")
+        return None, None, None
 
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+# --- دستورات ربات تلگرام ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("سلام! من ربات تحلیل‌گر شما هستم. برای دریافت سیگنال از دستور /signal استفاده کنید.")
 
-# --- هندلرهای تلگرام ---
+async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    price, rsi, ema = get_crypto_data("bitcoin")
+    
+    if price is None:
+        await update.message.reply_text("خطا در دریافت اطلاعات از بازار. لطفاً کمی بعد امتحان کنید.")
+        return
 
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    welcome_text = (
-        "👋 به ربات تحلیلگر خوش آمدید!\n\n"
-        "🔍 دستورات:\n"
-        "▫️ `/price BTC` : قیمت لحظه‌ای\n"
-        "▫️ `/signal BTC` : تحلیل تکنیکال سریع\n"
-        "▫️ `/debug` : تست وضعیت اتصال\n\n"
-        "💡 نکته: این ربات از داده‌های CoinGecko استفاده می‌کند."
-    )
-    bot.reply_to(message, welcome_text, parse_mode="Markdown")
+    msg = f"📊 تحلیل بیت‌کوین (BTC):\n\n"
+    msg += f"💰 قیمت فعلی: ${price:,.2f}\n"
+    msg += f"📉 RSI (14): {rsi:.2f}\n"
+    msg += f"📈 EMA (20): ${ema:,.2f}\n\n"
 
-@bot.message_handler(commands=['debug'])
-def debug_bot(message):
-    sent = bot.reply_to(message, "⏳ در حال بررسی وضعیت شبکه...")
-    df, info = get_coingecko_data("BTC")
-    if info:
-        bot.edit_message_text(
-            f"✅ اتصال برقرار است.\n💰 قیمت بیت‌کوین: {info['price']:,}$",
-            chat_id=sent.chat.id,
-            message_id=sent.message_id
-        )
+    if rsi < 30:
+        msg += "🟢 سیگنال: اشباع فروش (احتمال صعود)"
+    elif rsi > 70:
+        msg += "🔴 سیگنال: اشباع خرید (احتمال اصلاح)"
     else:
-        bot.edit_message_text(
-            "❌ خطا در اتصال به CoinGecko. احتمال Rate Limit.",
-            chat_id=sent.chat.id,
-            message_id=sent.message_id
-        )
+        msg += "⚪ وضعیت: خنثی"
 
-@bot.message_handler(commands=['price'])
-def show_price(message):
-    text_parts = message.text.split()
-    symbol = clean_symbol(text_parts[1]) if len(text_parts) > 1 else "BTC"
+    await update.message.reply_text(msg)
+
+# --- اجرای اصلی ---
+if __name__ == '__main__':
+    # ۱. اجرای وب‌سرور در یک ترد جداگانه
+    Thread(target=run_web_server).start()
     
-    df, info = get_coingecko_data(symbol)
-    if info:
-        emoji = "🟢" if info['change'] >= 0 else "🔴"
-        msg = (
-            f"💰 **قیمت لحظه‌ای {symbol}**\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"💵 قیمت: `${info['price']:,.2f}`\n"
-            f"{emoji} تغییرات ۲۴ساعته: `{info['change']:.2f}%`\n"
-            f"📍 منبع: CoinGecko"
-        )
-        bot.reply_to(message, msg, parse_mode="Markdown")
+    # ۲. تنظیم و اجرای ربات تلگرام
+    TOKEN = os.environ.get("BOT_TOKEN")
+    if not TOKEN:
+        logging.error("No BOT_TOKEN found in environment variables!")
     else:
-        bot.reply_to(message, f"❌ ارز `{symbol}` یافت نشد یا در لیست پشتیبانی نیست.", parse_mode="Markdown")
-
-@bot.message_handler(commands=['signal'])
-def get_signal(message):
-    text_parts = message.text.split()
-    symbol = clean_symbol(text_parts[1]) if len(text_parts) > 1 else "BTC"
-    
-    wait_msg = bot.reply_to(message, f"🔍 در حال تحلیل فنی {symbol}...")
-    
-    df, info = get_coingecko_data(symbol)
-    
-    if df is not None and len(df) > 30:
-        close = df['close']
-        rsi = calculate_rsi(close).iloc[-1]
-        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        current_price = info['price']
+        application = ApplicationBuilder().token(TOKEN).build()
         
-        status = "Neutral ⚪"
-        if rsi > 70:
-            status = "اشباع خرید (احتمال اصلاح) 🔴"
-        elif rsi < 30:
-            status = "اشباع فروش (فرصت خرید) 🟢"
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("signal", signal))
         
-        trend = "صعودی 📈" if current_price > ema20 else "نزولی 📉"
-        
-        msg = (
-            f"📊 **تحلیل تکنیکال {symbol}**\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"💰 قیمت: `${current_price:,.2f}`\n"
-            f"📈 روند (EMA20): {trend}\n"
-            f"📊 شاخص RSI: `{rsi:.2f}`\n"
-            f"📢 وضعیت: {status}\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"⚠️ این یک پیشنهاد مالی نیست."
-        )
-        bot.edit_message_text(
-            msg,
-            chat_id=wait_msg.chat.id,
-            message_id=wait_msg.message_id,
-            parse_mode="Markdown"
-        )
-    else:
-        bot.edit_message_text(
-            "❌ خطا در دریافت داده‌های تحلیل.",
-            chat_id=wait_msg.chat.id,
-            message_id=wait_msg.message_id
-        )
-
-# --- اجرای ربات ---
-if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    print("Bot is starting...")
-    bot.remove_webhook()
-    bot.infinity_polling(none_stop=True, timeout=60)
+        logging.info("Starting bot...")
+        application.run_polling()
