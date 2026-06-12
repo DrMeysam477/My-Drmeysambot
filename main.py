@@ -1,36 +1,44 @@
 import os
+import asyncio
 import threading
 from flask import Flask
 from telegram.ext import ApplicationBuilder
 
-# راه اندازی سرور Flask برای رفع خطای پورت رندر
+# بخش Flask برای عبور از سد Health Check رندر
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Bot is running!", 200
+    return "OK", 200
 
 def run_flask():
-    # رندر پورت را از محیط سیستم می‌خواند
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-def main():
-    # توکن خود را اینجا قرار دهید
+async def start_bot():
+    # توکن خود را اینجا بگذار
     TOKEN = "YOUR_BOT_TOKEN_HERE"
     
-    # ساخت اپلیکیشن ربات
+    # ساخت اپلیکیشن با متد جدید
     application = ApplicationBuilder().token(TOKEN).build()
     
-    print("Bot is starting...")
-    # اجرای پولینگ ربات
-    application.run_polling()
+    # اگر هندلر داری اینجا اضافه کن (مثلا start_handler)
+    
+    print("Starting bot polling...")
+    async with application:
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        # ایجاد یک حلقه بی‌پایان برای باز ماندن ربات
+        while True:
+            await asyncio.sleep(1)
 
 if __name__ == '__main__':
-    # اجرای وب‌سرور در پس‌زمینه
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+    # ۱. اجرای وب‌سرور در ترد جداگانه
+    threading.Thread(target=run_flask, daemon=True).start()
     
-    # اجرای ربات در ترد اصلی
-    main()
+    # ۲. اجرای ربات تلگرام در حلقه اصلی
+    try:
+        asyncio.run(start_bot())
+    except (KeyboardInterrupt, SystemExit):
+        pass
