@@ -1,1 +1,5 @@
-python-3.10.12
+python-telegram-bot==20.7
+Flask==3.0.3
+werkzeug==3.0.3
+requests==2.32.3
+gunicorn==22.0.0
