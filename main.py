@@ -1,46 +1,40 @@
 import os
 import telebot
+import ccxt
+import pandas as pd
 from flask import Flask
 from threading import Thread
+import time
 
-# 1. تنظیمات توکن (حتماً توکن خودت را جایگزین کن)
-API_TOKEN = 'YOUR_BOT_TOKEN_HERE'
+# 1. تنظیمات اولیه
+API_TOKEN = '7223788755:AAH4M8Z466hWOfqN3kH3775XnS2u0fQj-bU' # توکن شما
 bot = telebot.TeleBot(API_TOKEN)
-
-# 2. تنظیم فلاسک برای زنده نگه داشتن سرور در Render
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "Bot is alive!"
+# 2. توابع تحلیلی
+def calculate_rsi(df, period=14):
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-@app.route('/health')
-def health():
-    return "OK", 200
+def get_crypto_data(symbol):
+    try:
+        exchange = ccxt.okx()
+        bars = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        return df
+    except Exception:
+        return None
 
-def run_flask():
-    # Render از پورت 10000 استفاده می‌کند
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# 3. هندلرهای ربات (نمونه)
+# 3. هندلرهای ربات تلگرام
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "Bot started ✅")
+    bot.reply_to(message, "سلام! به ربات معاملاتی خوش آمدید. ✅\nدستورات:\n/status - بررسی وضعیت\n/signal BTC-USDT-SWAP - تحلیل ارز\n/scan - اسکن بازار")
 
 @bot.message_handler(commands=['status'])
 def send_status(message):
-    bot.reply_to(message, "Bot is running on Render ✅")
+    bot.reply_to(message, "Bot is running on Render ✅\nEverything is stable!")
 
-# اینجا بقیه هندلرهای /signal و /scan را که قبلاً داشتیم اضافه کن...
-
-# 4. اجرای همزمان فلاسک و بات
-if __name__ == "__main__":
-    print("Starting Flask...")
-    # اجرای فلاسک در یک Thread جداگانه
-    t = Thread(target=run_flask)
-    t.start()
-    
-    print("Bot started...")
-    # اجرای بات در Thread اصلی به صورت بی‌پایان
-    bot.infinity_polling()
+@bot.message_handler(commands
