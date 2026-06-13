@@ -1,37 +1,63 @@
-import telebot
 import os
+import threading
 from flask import Flask
-from threading import Thread
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import ccxt
 
-# ۱. تنظیمات اولیه
-BOT_TOKEN = 'توکن_ربات_خودت_را_اینجا_بگذار'
-bot = telebot.TeleBot(BOT_TOKEN)
+# تنظیمات Flask برای Health Check در Render
 app = Flask(__name__)
 
-# ۲. بخشی که Render لازم دارد تا ربات را خاموش نکند
 @app.route('/')
-def health_check():
-    return "Bot is alive! ✅", 200
+def home():
+    return "Bot is Running!"
 
-def run_web_server():
-    # Render پورت را به صورت خودکار به ما می‌دهد
+def run_flask():
+    # Render از پورت 10000 استفاده می‌کند
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# ۳. دستورات ربات (نمونه)
-@bot.message_handler(commands=['start', 'status'])
-def send_welcome(message):
-    bot.reply_to(message, "ربات با موفقیت در Render فعال است! 🚀")
-
-# ۴. اجرای همزمان وب‌سرور و ربات
-if __name__ == "__main__":
-    # اجرای وب‌سرور در یک رشته جداگانه
-    web_thread = Thread(target=run_web_server)
-    web_thread.start()
-    
-    print("Starting Bot Polling...")
-    # اجرای ربات
+# تابع گرفتن قیمت با استفاده از CCXT
+def get_crypto_price(symbol="BTC/USDT"):
     try:
-        bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        exchange = ccxt.okx() # استفاده از صرافی OKX
+        ticker = exchange.fetch_ticker(symbol)
+        return ticker['last']
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error fetching price: {e}")
+        return None
+
+# دستور /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("سلام! ربات تحلیل‌گر شما آنلاین است. 🚀\nبا دستور /price قیمت لحظه‌ای را بگیرید.")
+
+# دستور /status
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("وضعیت: ربات روی سرور Render فعال است. ✅")
+
+# دستور /price (نسخه پیشرفته با CCXT)
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    price_val = get_crypto_price("BTC/USDT")
+    if price_val:
+        await update.message.reply_text(f"💰 قیمت لحظه‌ای BTC-USDT: {price_val:,} دلار")
+    else:
+        await update.message.reply_text("خطا در دریافت قیمت. لطفا دوباره تلاش کنید.")
+
+if __name__ == '__main__':
+    # اجرای Flask در یک ترد جداگانه
+    threading.Thread(target=run_flask).start()
+
+    # تنظیمات ربات تلگرام
+    TOKEN = os.environ.get("BOT_TOKEN")
+    if not TOKEN:
+        print("Error: BOT_TOKEN not found in environment variables!")
+    else:
+        application = ApplicationBuilder().token(TOKEN).build()
+        
+        # اضافه کردن دستورات به ربات
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("status", status))
+        application.add_handler(CommandHandler("price", price))
+        
+        print("Bot started...")
+        application.run_polling()
