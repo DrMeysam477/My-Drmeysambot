@@ -1,7 +1,6 @@
-pyTelegramBotAPI
-flask
-pandas
-numpy
-ccxt
-requests
-gunicorn
+pyTelegramBotAPI==4.20.0
+flask==3.0.2
+gunicorn==21.2.0
+ccxt==4.3.59
+pandas==2.2.1
+numpy==1.26.4
