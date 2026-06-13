@@ -1,3 +1,5 @@
-Flask
+python-telegram-bot==20.*
+flask
 requests
-python-telegram-bot==21.6
+pandas
+numpy
