@@ -8,7 +8,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from dataclasses import dataclass
 from datetime import datetime
 
-# ---------- Flask برای روشن نگه داشتن Render ----------
+# ---------- Flask برای روشن ماندن Render ----------
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
@@ -46,7 +46,10 @@ def get_okx_data(symbol):
 
         df = pd.DataFrame(
             data["data"],
-            columns=["ts", "open", "high", "low", "close", "volume", "vol_ccy", "vol_quote", "confirm"]
+            columns=[
+                "ts", "open", "high", "low", "close",
+                "volume", "vol_ccy", "vol_quote", "confirm"
+            ]
         )
 
         df["open"] = df["open"].astype(float)
@@ -80,8 +83,7 @@ def detect_direction(df):
 
     if last_close > prev_close:
         return "LONG"
-    else:
-        return "SHORT"
+    return "SHORT"
 
 # ---------- تایید سیگنال ----------
 def should_send_signal(signal):
@@ -93,7 +95,7 @@ def should_send_signal(signal):
         return False
     return True
 
-# ---------- متن پیام تلگرام ----------
+# ---------- ساخت پیام سیگنال ----------
 def format_signal_message(signal):
     entry = (signal.entry_low + signal.entry_high) / 2
 
@@ -152,6 +154,7 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         atr = calculate_atr(df)
+
         if pd.isna(atr) or atr == 0:
             continue
 
@@ -202,7 +205,11 @@ def run_bot():
     app.add_handler(CommandHandler("start", start))
 
     print("Bot is running...")
-    app.run_polling()
+    app.run_polling(
+        poll_interval=2,
+        timeout=30,
+        drop_pending_updates=True
+    )
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
