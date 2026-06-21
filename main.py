@@ -1,5 +1,6 @@
 import os
 import threading
+import asyncio
 import requests
 import pandas as pd
 from flask import Flask
@@ -19,6 +20,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
 
+
 # ---------- مدل سیگنال ----------
 @dataclass
 class Signal:
@@ -28,10 +30,10 @@ class Signal:
     entry_low: float
     entry_high: float
     atr: float
-    stop_loss: float
     score: int
     confidence: int
     risk_reward: float
+
 
 # ---------- گرفتن کندل از OKX ----------
 def get_okx_data(symbol):
@@ -65,7 +67,8 @@ def get_okx_data(symbol):
         print("OKX error:", e)
         return None
 
-# ---------- محاسبه ATR بدون pandas_ta ----------
+
+# ---------- محاسبه ATR دستی ----------
 def calculate_atr(df, period=14):
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
@@ -76,6 +79,7 @@ def calculate_atr(df, period=14):
 
     return atr.iloc[-1]
 
+
 # ---------- تشخیص جهت ساده ----------
 def detect_direction(df):
     last_close = df["close"].iloc[-1]
@@ -83,7 +87,9 @@ def detect_direction(df):
 
     if last_close > prev_close:
         return "LONG"
-    return "SHORT"
+    else:
+        return "SHORT"
+
 
 # ---------- تایید سیگنال ----------
 def should_send_signal(signal):
@@ -94,6 +100,7 @@ def should_send_signal(signal):
     if signal.risk_reward < 2:
         return False
     return True
+
 
 # ---------- ساخت پیام سیگنال ----------
 def format_signal_message(signal):
@@ -130,6 +137,7 @@ def format_signal_message(signal):
 ⚖️ Risk/Reward: {signal.risk_reward}
 """
 
+
 # ---------- اسکن بازار ----------
 async def scan_market(context: ContextTypes.DEFAULT_TYPE):
     symbols = [
@@ -139,10 +147,10 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
         "DOGE-USDT",
         "XRP-USDT",
         "ADA-USDT",
-        "BNB-USDT",
         "AVAX-USDT",
         "LINK-USDT",
-        "TON-USDT"
+        "TON-USDT",
+        "MATIC-USDT"
     ]
 
     chat_id = context.job.chat_id
@@ -168,7 +176,6 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
             entry_low=last_price * 0.999,
             entry_high=last_price * 1.001,
             atr=atr,
-            stop_loss=0,
             score=85,
             confidence=82,
             risk_reward=2.5
@@ -177,6 +184,7 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
         if should_send_signal(signal):
             message = format_signal_message(signal)
             await context.bot.send_message(chat_id=chat_id, text=message)
+
 
 # ---------- دستور start ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -193,6 +201,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Scanner started ✅\nهر ۱۵ دقیقه بازار را اسکن می‌کنم."
     )
 
+
+# ---------- دستور تست دستی ----------
+async def scan_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("در حال اسکن بازار... ⏳")
+
+    fake_job = type("FakeJob", (), {"chat_id": update.effective_chat.id})()
+    context.job = fake_job
+
+    await scan_market(context)
+
+
 # ---------- اجرای ربات ----------
 def run_bot():
     token = os.environ.get("BOT_TOKEN")
@@ -201,15 +220,22 @@ def run_bot():
         print("BOT_TOKEN not found")
         return
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = ApplicationBuilder().token(token).build()
+
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("scan", scan_now))
 
     print("Bot is running...")
+
     app.run_polling(
         poll_interval=2,
         timeout=30,
         drop_pending_updates=True
     )
+
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
