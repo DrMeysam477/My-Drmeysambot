@@ -1,4 +1,4 @@
 flask
-python-telegram-bot==21.6
+python-telegram-bot[job-queue]==21.6
 requests
 pandas
