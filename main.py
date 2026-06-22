@@ -1,8 +1,6 @@
 import os
-import threading
 import requests
 import jdatetime
-
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -13,16 +11,12 @@ CHAT_ID = os.getenv("CHAT_ID")
 if not TOKEN:
     raise ValueError("BOT_TOKEN is not set")
 
-web_app = Flask(__name__)
+app = Flask(__name__)
 
 
-@web_app.get("/")
+@app.route("/")
 def home():
     return "Bot is running!", 200
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ربات فعاله ✅")
 
 
 def get_dollar_price():
@@ -31,70 +25,36 @@ def get_dollar_price():
     response.raise_for_status()
     data = response.json()
 
-    price = (
-        data.get("response", {})
-        .get("indicators", {})
-        .get("price_dollar_rl", {})
-        .get("p")
-    )
-
-    if not price:
-        raise ValueError("Dollar price not found in API response")
+    try:
+        price = data["response"]["indicators"]["price_dollar_rl"]["p"]
+    except Exception:
+        raise ValueError(f"Invalid API response: {data}")
 
     return str(price)
 
 
-async def send_price(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not CHAT_ID:
-            print("CHAT_ID is not set")
-            return
-
-        price = get_dollar_price()
-        now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
-
-        text = f"💵 قیمت دلار:\n{price}\n🕒 {now}"
-        awa context.bot.send_message(chat_id=CHAT_ID, text=text)
-        print("Price sent successfully")
-
-    except Exception as error:
-        print(f"send_price error: {error}")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("ربات فعاله ✅")
 
 
-async def manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         price = get_dollar_price()
         now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
-
         text = f"💵 قیمت دلار:\n{price}\n🕒 {now}"
         await update.message.reply_text(text)
-
-    except Exception as error:
-        await update.message.reply_text(f"خطا در دریافت قیم {error}")
+    except Exception as e:
+        await update.message.reply_text(f"خطا: {e}")
 
 
 def run_bot():
-    app = Application.builder().token(TOKEN).build()
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("scan", scan))
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("scan", manual_scan))
-
-    if app.job_queue:
-        app.job_queue.run_repeating(send_price, interval=900, first=10)
-    else:
-        print("JobQueue is not available")
-
-    print("Telegram bot started")
-    app.run_polling(drop_pending_updates=True)
-
-
-def main():
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+    print("Telegram bot started...")
+    application.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    main()
+    run_bot()
