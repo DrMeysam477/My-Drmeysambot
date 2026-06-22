@@ -1,8 +1,11 @@
+import os
 import requests
 import statistics
 import jdatetime
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from threading import Thread
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -10,6 +13,16 @@ TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "YOUR_CHAT_ID"
 
 TEHRAN_TZ = ZoneInfo("Asia/Tehran")
+
+web_app = Flask(__name__)
+
+@web_app.route("/")
+def home():
+    return "Bot is running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host="0.0.0.0", port=port)
 
 SYMBOLS = [
     "BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "DOGE-USDT",
@@ -199,6 +212,8 @@ async def manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    Thread(target=run_web, daemon=True).start()
+
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
