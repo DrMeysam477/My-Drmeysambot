@@ -2,6 +2,7 @@ import os
 import threading
 import requests
 import jdatetime
+
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -18,6 +19,11 @@ web_app = Flask(__name__)
 @web_app.route("/")
 def home():
     return "Bot is running!", 200
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
 
 
 def get_dollar_price():
@@ -44,12 +50,13 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
         text = f"💵 قیمت دلار:\n{price}\n🕒 {now}"
         await update.message.reply_text(text)
-    except Exception as e:
-        await update.message.reply_text(f"خطا: {e}")
+    except Exception as error:
+        await update.message.reply_text(f"خطا: {error}")
 
 
 def run_bot():
     application = Application.builder().token(TOKEN).build()
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan))
 
@@ -58,7 +65,5 @@ def run_bot():
 
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+    threading.Thread(target=run_web, daemon=True).start()
+    run_bot()
