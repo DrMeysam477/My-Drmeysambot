@@ -1,231 +1,99 @@
 import os
+import threading
 import requests
-import statistics
 import jdatetime
-from datetime import datetime
-from zoneinfo import ZoneInfo
-from threading import Thread
+
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-TOKEN = "YOUR_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-TEHRAN_TZ = ZoneInfo("Asia/Tehran")
+if not TOKEN:
+    raise ValueError("BOT_TOKEN is not set")
 
 web_app = Flask(__name__)
 
-@web_app.route("/")
+
+@web_app.get("/")
 def home():
-    return "Bot is running!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    web_app.run(host="0.0.0.0", port=port)
-
-SYMBOLS = [
-    "BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "DOGE-USDT",
-    "ADA-USDT", "AVAX-USDT", "DOT-USDT", "MATIC-USDT", "LINK-USDT", "LTC-USDT",
-    "TRX-USDT", "ATOM-USDT", "NEAR-USDT", "APT-USDT", "OP-USDT", "ARB-USDT",
-    "SUI-USDT", "INJ-USDT", "FIL-USDT", "AAVE-USDT", "RUNE-USDT", "GRT-USDT",
-    "SEI-USDT", "TIA-USDT", "PEPE-USDT", "WLD-USDT", "ORDI-USDT", "JUP-USDT"
-]
-
-sent_signals = {}
-
-
-def get_candles(symbol):
-    try:
-        url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-
-        if data.get("data"):
-            return list(reversed(data["data"]))
-
-    except Exception as error:
-        print(f"Error getting candles for {symbol}: {error}")
-
-    return None
-
-
-def calculate_atr(candles, period=14):
-    trs = []
-
-    for i in range(1, len(candles)):
-        high = float(candles[i][2])
-        low = float(candles[i][3])
-        prev_close = float(candles[i - 1][4])
-
-        tr = max(
-            high - low,
-            abs(high - prev_close),
-            abs(low - prev_close)
-        )
-
-        trs.append(tr)
-
-    if len(trs) < period:
-        return None
-
-    return statistics.mean(trs[-period:])
-
-
-def get_tehran_time():
-    now = datetime.now(TEHRAN_TZ)
-    jalali = jdatetime.datetime.fromgregorian(datetime=now)
-    return jalali.strftime("%H:%M | %Y/%m/%d")
-
-
-def analyze_market(symbol, candles):
-    if not candles or len(candles) < 30:
-        return None
-
-    close = float(candles[-1][4])
-    prev_close = float(candles[-2][4])
-    volume = float(candles[-1][5])
-    avg_volume = statistics.mean([float(candle[5]) for candle in candles[-20:]])
-
-    atr = calculate_atr(candles)
-
-    if not atr or atr == 0:
-        return None
-
-    direction = "LONG" if close > prev_close else "SHORT"
-
-    liquidity_ok = volume > avg_volume * 1.2
-    whale_text = "تأیید شد ✅" if liquidity_ok else "عادی"
-
-    if direction == "LONG":
-        entry = close
-        tp1 = entry + atr
-        tp2 = entry + atr * 1.5
-        tp3 = entry + atr * 2.2
-        tp4 = entry + atr * 3
-        stop_loss = entry - atr * 1.2
-    else:
-        entry = close
-        tp1 = entry - atr
-        tp2 = entry - atr * 1.5
-        tp3 = entry - atr * 2.2
-        tp4 = entry - atr * 3
-        stop_loss = entry + atr * 1.2
-
-    risk = abs(entry - stop_loss)
-
-    if risk == 0:
-        return None
-
-    reward = abs(tp2 - entry)
-    rr = reward / risk
-
-    score = min(int(rr * 45), 100)
-    confidence = min(int(rr * 40), 98)
-
-    if liquidity_ok:
-        score = min(score + 10, 100)
-        confidence = min(confidence + 8, 98)
-
-    if score < 60:
-        return None
-
-    signal_key = f"{symbol}-{direction}"
-
-    if sent_signals.get(symbol) == signal_key:
-        return None
-
-    sent_signals[symbol] = signal_key
-
-    time_text = get_tehran_time()
-    direction_text = "لانگ / LONG" if direction == "LONG" else "شورت / SHORT"
-
-    message = f"""
-📊 نماد: {symbol.replace("-USDT", "")}
-🕒 زمان سیگنال: {time_text}
-⏱ تایم‌فریم: 15m
-
-🟢 قدرت سیگنال: قوی | ✅ ورود مناسب
-🐳 فعالیت نهنگ‌ها: ورود نقدینگی {whale_text}
-
-📌 نوع معامله: {direction_text}
-💵 قیمت حدودی ورود: {entry:,.4f}$
-
-🎯 تارگت اول: {tp1:,.4f}$
-🎯 تارگت دوم: {tp2:,.4f}$
-🎯 تارگت سوم: {tp3:,.4f}$
-🎯 تارگت چهارم: {tp4:,.4f}$
-
-🛑 حد ضرر معقول: {stop_loss:,.4f}$
-
-✅ درصد درستی تقریبی پیش‌بینی: {confidence}%
-⭐ امتیاز سیگنال: {score}/100
-"""
-
-    return message
-
-
-async def scan_job(context: ContextTypes.DEFAULT_TYPE):
-    print("Automatic scan started...")
-
-    for symbol in SYMBOLS:
-        candles = get_candles(symbol)
-
-        if not candles:
-            continue
-
-        signal = analyze_market(symbol, candles)
-
-        if signal:
-            await context.bot.send_message(chat_id=CHAT_ID, text=signal)
-
-    print("Automatic scan finished.")
+    return "Bot is running!", 200
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🚀 ربات اسکنر فعال شد.\n"
-        "هر ۱۵ دقیقه بازار را بررسی می‌کنم.\n"
-        "برای اسکن دستی دستور /scan را بفرست."
+    await update.message.reply_text("ربات فعاله ✅")
+
+
+def get_dollar_price():
+    url = "https://api.tgju.org/v1/widget/tmp?keys=price_dollar_rl"
+    response = requests.get(url, timeout=20)
+    response.raise_for_status()
+    data = response.json()
+
+    price = (
+        data.get("response", {})
+        .get("indicators", {})
+        .get("price_dollar_rl", {})
+        .get("p")
     )
+
+    if not price:
+        raise ValueError("Dollar price not found in API response")
+
+    return str(price)
+
+
+async def send_price(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not CHAT_ID:
+            print("CHAT_ID is not set")
+            return
+
+        price = get_dollar_price()
+        now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
+
+        text = f"💵 قیمت دلار:\n{price}\n🕒 {now}"
+        awa context.bot.send_message(chat_id=CHAT_ID, text=text)
+        print("Price sent successfully")
+
+    except Exception as error:
+        print(f"send_price error: {error}")
 
 
 async def manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔎 در حال اسکن بازار... لطفاً صبر کن.")
+    try:
+        price = get_dollar_price()
+        now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
 
-    found = False
+        text = f"💵 قیمت دلار:\n{price}\n🕒 {now}"
+        await update.message.reply_text(text)
 
-    for symbol in SYMBOLS:
-        candles = get_candles(symbol)
+    except Exception as error:
+        await update.message.reply_text(f"خطا در دریافت قیم {error}")
 
-        if not candles:
-            continue
 
-        signal = analyze_market(symbol, candles)
+def run_bot():
+    app = Application.builder().token(TOKEN).build()
 
-        if signal:
-            await update.message.reply_text(signal)
-            found = True
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("scan", manual_scan))
 
-    if not found:
-        await update.message.reply_text("فعلاً سیگنال قوی پیدا نشد. 🛑")
+    if app.job_queue:
+        app.job_queue.run_repeating(send_price, interval=900, first=10)
+    else:
+        print("JobQueue is not available")
+
+    print("Telegram bot started")
+    app.run_polling(drop_pending_updates=True)
 
 
 def main():
-    Thread(target=run_web, daemon=True).start()
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
 
-    application = Application.builder().token(TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("scan", manual_scan))
-
-    if application.job_queue:
-        application.job_queue.run_repeating(scan_job, interval=900, first=10)
-    else:
-        print("JobQueue is not available. Check requirements.txt")
-
-    print("Bot is running...")
-    application.run_polling(drop_pending_updates=True)
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
