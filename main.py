@@ -7,11 +7,12 @@ from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- تنظیمات اصلی ---
+# --- تنظیمات اصلی (حتماً جایگذاری کن) ---
 TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "YOUR_CHAT_ID"
 TEHRAN_TZ = ZoneInfo("Asia/Tehran")
 
+# لیست ۳۰ ارز برتر
 SYMBOLS = [
     "BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "DOGE-USDT",
     "ADA-USDT", "AVAX-USDT", "DOT-USDT", "MATIC-USDT", "LINK-USDT", "LTC-USDT",
@@ -46,7 +47,7 @@ def get_tehran_time():
     jalali = jdatetime.datetime.fromgregorian(datetime=now)
     return jalali.strftime("%H:%M | %Y-%m-%d")
 
-def analyze_signal(symbol, candles):
+def analyze_market(symbol, candles):
     close = float(candles[-1][4])
     prev_close = float(candles[-2][4])
     volume = float(candles[-1][5])
@@ -55,6 +56,7 @@ def analyze_signal(symbol, candles):
     atr = calculate_atr(candles)
     direction = "LONG" if close > prev_close else "SHORT"
     
+    # فیلتر نقدینگی (شبیه‌سازی ورود نهنگ)
     whale_act = "تأیید شد ✅" if volume > avg_volume * 1.5 else "عادی"
     
     if direction == "LONG":
@@ -70,8 +72,10 @@ def analyze_signal(symbol, candles):
     score = min(int(rr * 35), 100)
     confidence = min(int(rr * 30), 98)
 
+    # فیلتر قدرت سیگنال
     if score < 65: return None
     
+    # جلوگیری از تکرار سیگنال در یک جهت
     if sent_signals.get(symbol) == direction: return None
     sent_signals[symbol] = direction
 
@@ -101,42 +105,45 @@ def analyze_signal(symbol, candles):
 """
     return template
 
-async def scan_market(context: ContextTypes.DEFAULT_TYPE):
+async def scan_job(context: ContextTypes.DEFAULT_TYPE):
     for symbol in SYMBOLS:
         candles = get_candles(symbol)
         if not candles: continue
-        signal = analyze_signal(symbol, candles)
+        signal = analyze_market(symbol, candles)
         if signal:
             await context.bot.send_message(chat_id=CHAT_ID, text=signal)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 ربات اسکنر حرفه‌ای فعال شد!")
+    await update.message.reply_text("🚀 ربات اسکنر نسخه ۱۰/۱۰ فعال شد!\nهر ۱۵ دقیقه بازار اسکن می‌شود.")
 
-async def force_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔎 در حال اسکن... لطفاً صبر کنید.")
+async def manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔎 در حال جستجوی سیگنال‌های قوی... کمی صبر کنید.")
+    found = False
     for symbol in SYMBOLS:
         candles = get_candles(symbol)
         if not candles: continue
-        signal = analyze_signal(symbol, candles)
-        if signal: await update.message.reply_text(signal)
+        signal = analyze_market(symbol, candles)
+        if signal:
+            await update.message.reply_text(signal)
+            found = True
+    if not found:
+        await update.message.reply_text("فعلاً سیگنال قوی در بازار پیدا نشد. 🛑")
 
-# --- اصلاح بخش اصلی برای رفع خطای Event Loop ---
 def main():
-    # ساخت اپلیکیشن
-    app = Application.builder().token(TOKEN).build()
+    # استفاده از متد جدید برای جلوگیری از خطای Loop
+    application = Application.builder().token(TOKEN).build()
     
-    # افزودن دستورات
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("scan", force_scan))
+    # دستورات
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("scan", manual_scan))
     
-    # تنظیم زمان‌بندی
-    job_queue = app.job_queue
-    job_queue.run_repeating(scan_market, interval=900, first=10)
+    # زمان‌بندی (هر ۱۵ دقیقه = ۹۰۰ ثانیه)
+    job_queue = application.job_queue
+    job_queue.run_repeating(scan_job, interval=900, first=10)
     
-    print("Bot is starting...")
-    
-    # اجرای ربات (این متد در نسخه‌های جدید پایدارتر است)
-    app.run_polling(drop_pending_updates=True)
+    print("Bot is running...")
+    # متد نهایی برای اجرا در Render
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
