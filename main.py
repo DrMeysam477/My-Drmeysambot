@@ -1,61 +1,44 @@
 import os
+import asyncio
 import threading
-import requests
-import jdatetime
-
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# تنظیمات اصلی
 TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-if not TOKEN:
-    raise ValueError("BOT_TOKEN is not set")
-
 app = Flask(__name__)
 
-
-@app.route("/")
+@app.route('/')
 def home():
-    return "Bot is running ✅", 200
+    return "Bot is Alive!", 200
 
-
-def get_dollar_price():
-    url = "https://api.tgju.org/v1/widget/tmp?keys=price_dollar_rl"
-    response = requests.get(url, timeout=20)
-    response.raise_for_status()
-    data = response.json()
-    return str(data["response"]["indicators"]["price_dollar_rl"]["p"])
-
-
+# تابعی که در عکس داشتی (نمونه)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ربات فعاله ✅")
+    await update.message.reply_text("Scanner started ✅\nهر ۱۵ دقیقه بازار را اسکن می‌کنم.")
 
-
-async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        price = get_dollar_price()
-        now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
-        await update.message.reply_text(f"💵 قیمت دلار:\n{price}\n🕒 {now}")
-    except Exception as error:
-        await update.message.reply_text(f"خطا: {err}")
-
-
-def run_bot():
-    print("Telegram bot starting...", flush=True)
-
+async def run_bot():
+    # ساخت اپلیکیشن ربات
     application = Application.builder().token(TOKEN).build()
+    
+    # اضافه کردن دستورات
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("scan", scan))
+    
+    # شروع به کار ربات
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # نگه داشتن ربات در حالت اجرا
+    await asyncio.Event().wait()
 
-    print("Telegram bot started.", flush=True)
-    application.run_polling(drop_pending_updates=True)
-
+def start_telegram():
+    asyncio.run(run_bot())
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-
+    # ۱. اجرای ربات در یک Thread جداگانه
+    threading.Thread(target=start_telegram, daemon=True).start()
+    
+    # ۲. اجرای Flask روی پورت Render (رشته اصلی)
     port = int(os.environ.get("PORT", 10000))
-    print(f"Starting Flask on port {port}", flush=True)
-    app.run(host="0.0.0.0", port=port)
+    app.run(host='0.0.0.0', port=port)
