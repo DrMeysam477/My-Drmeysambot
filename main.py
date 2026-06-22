@@ -13,17 +13,12 @@ CHAT_ID = os.getenv("CHAT_ID")
 if not TOKEN:
     raise ValueError("BOT_TOKEN is not set")
 
-web_app = Flask(__name__)
+app = Flask(__name__)
 
 
-@web_app.route("/")
+@app.route("/")
 def home():
-    return "Bot is running!", 200
-
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+    return "Bot is running ✅", 200
 
 
 def get_dollar_price():
@@ -31,13 +26,7 @@ def get_dollar_price():
     response = requests.get(url, timeout=20)
     response.raise_for_status()
     data = response.json()
-
-    try:
-        price = data["response"]["indicators"]["price_dollar_rl"]["p"]
-    except Exception:
-        raise ValueError(f"Invalid API response: {data}")
-
-    return str(price)
+    return str(data["response"]["indicators"]["price_dollar_rl"]["p"])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -48,22 +37,25 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         price = get_dollar_price()
         now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
-        text = f"💵 قیمت دلار:\n{price}\n🕒 {now}"
-        await update.message.reply_text(text)
+        await update.message.reply_text(f"💵 قیمت دلار:\n{price}\n🕒 {now}")
     except Exception as error:
-        await update.message.reply_text(f"خطا: {error}")
+        await update.message.reply_text(f"خطا: {err}")
 
 
 def run_bot():
-    application = Application.builder().token(TOKEN).build()
+    print("Telegram bot starting...", flush=True)
 
+    application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan))
 
-    print("Telegram bot started...")
+    print("Telegram bot started.", flush=True)
     application.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web, daemon=True).start()
-    run_bot()
+    threading.Thread(target=run_bot, daemon=True).start()
+
+    port = int(os.environ.get("PORT", 10000))
+    print(f"Starting Flask on port {port}", flush=True)
+    app.run(host="0.0.0.0", port=port)
