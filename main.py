@@ -1,4 +1,5 @@
 import os
+import threading
 import requests
 import jdatetime
 from flask import Flask
@@ -11,10 +12,10 @@ CHAT_ID = os.getenv("CHAT_ID")
 if not TOKEN:
     raise ValueError("BOT_TOKEN is not set")
 
-app = Flask(__name__)
+web_app = Flask(__name__)
 
 
-@app.route("/")
+@web_app.route("/")
 def home():
     return "Bot is running!", 200
 
@@ -57,4 +58,7 @@ def run_bot():
 
 
 if __name__ == "__main__":
-    run_bot()
+    threading.Thread(target=run_bot, daemon=True).start()
+
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
