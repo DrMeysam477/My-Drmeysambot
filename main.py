@@ -1139,3 +1139,43 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 دستورها:
 /scan اجرای اسکن دستی
 /status
+
+async def price_command(update, context):
+    try:
+        if not context.args:
+            await update.message.reply_text("مثال:\n/price BTC")
+            return
+
+        coin = context.args[0].upper()
+        inst_id = f"{coin}-USDT-SWAP"
+
+        url = f"https://www.okx.com/api/v5/market/ticker?instId={inst_id}"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                data = await response.json()
+
+        if data.get("code") != "0" or not data.get("data"):
+            await update.message.reply_text(f"قیمت {coin} از OKX پیدا نشد.")
+            return
+
+        ticker = data["data"][0]
+        last_price = ticker.get("last")
+        high_24h = ticker.get("high24h")
+        low_24h = ticker.get("low24h")
+        volume = ticker.get("volCcy24h")
+
+        text = f"""
+OKX Price ✅
+
+Symbol: {inst_id}
+Last: {last_price}
+24H High: {high_24h}
+24H Low: {low_24h}
+24H Volume: {volume}
+"""
+
+        await update.message.reply_text(text)
+
+    except Exception as e:
+        await update.message.reply_text(f"خطا در دریافت قیمت از OKX:\n{e}")
