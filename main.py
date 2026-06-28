@@ -1,11 +1,11 @@
 import os
+import asyncio
 import threading
-import requests
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# تنظیمات
+# تنظیمات اصلی
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.environ.get("PORT", 10000))
 
@@ -13,37 +13,29 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "OK", 200
-
-def get_price():
-    try:
-        url = "https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT"
-        res = requests.get(url, timeout=5).json()
-        return f"BTC Price: {res['data'][0]['last']} USDT"
-    except:
-        return "Price error."
+    return "Bot is Running!", 200
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ربات آنلاین شد! برای قیمت /price بزنید.")
+    await update.message.reply_text("سلام! ربات با موفقیت فعال شد. برای دریافت قیمت دستور /price را بزنید.")
 
-async def send_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(get_price())
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("در حال دریافت قیمت... (این یک تست است)")
 
-def run_bot():
-    if not BOT_TOKEN:
-        print("BOT_TOKEN NOT FOUND")
-        return
-    # ساخت اپلیکیشن نسخه ۲۰+
-    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CommandHandler("price", send_price))
-    print("Starting Telegram Polling...")
-    app_bot.run_polling(close_loop=False)
+def run_telegram():
+    print("Starting Telegram Bot...")
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("price", price))
+    
+    application.run_polling(close_loop=False)
 
 if __name__ == "__main__":
-    # اجرای تلگرام در یک ترد مجزا
-    threading.Thread(target=run_bot, daemon=True).start()
+    # اجرای ربات تلگرام در یک رشته جداگانه
+    threading.Thread(target=run_telegram, daemon=True).start()
     
-    # اجرای سریع فلسک برای اینکه رندر ارور پورت ندهد
-    print(f"Starting Flask on port {PORT}")
+    # اجرای وب‌سرور برای رندر
+    print(f"Starting Web Server on port {PORT}...")
     app.run(host="0.0.0.0", port=PORT)
